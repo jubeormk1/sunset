@@ -2851,6 +2851,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "sunset-sftp"
+version = "0.1.0"
+dependencies = [
+ "sunset",
+ "sunset-sshwire-derive",
+]
+
+[[package]]
 name = "sunset-sshwire-derive"
 version = "0.2.1"
 dependencies = [
