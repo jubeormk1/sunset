@@ -2889,16 +2889,10 @@ dependencies = [
 
 [[package]]
 name = "sunset-sftp"
-version = "0.1.2"
+version = "0.1.0"
 dependencies = [
- "embassy-futures",
- "embassy-sync 0.7.2",
- "embedded-io-async",
- "log",
  "num_enum 0.7.4",
- "paste",
  "sunset",
- "sunset-async",
  "sunset-sshwire-derive",
 ]
 
