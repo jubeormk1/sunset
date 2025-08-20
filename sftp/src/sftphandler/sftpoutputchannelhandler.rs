@@ -67,7 +67,7 @@ impl<const N: usize> SftpOutputPipe<N> {
 
 /// Consumer that takes ownership of [`ChanOut`]. It pipes the data received
 /// from a [`PipeReader`] into the channel
-pub struct SftpOutputConsumer<'a, const N: usize> {
+pub(crate) struct SftpOutputConsumer<'a, const N: usize> {
     reader: PipeReader<'a, SunsetRawMutex, N>,
     ssh_chan_out: ChanOut<'a>,
     counter: &'a CounterMutex,
@@ -138,7 +138,6 @@ impl<'a, const N: usize> SftpOutputProducer<'a, N> {
         let mut sink = SftpSink::new(&mut buf);
         packet.encode_response(&mut sink)?;
         debug!("Output Producer: Sending packet {:?}", packet);
-        sink.finalize();
         Self::send_buffer(&self.writer, &sink.used_slice(), &self.counter).await;
         Ok(())
     }
@@ -166,10 +165,13 @@ impl<'a, const N: usize> SftpOutputProducer<'a, N> {
             if buf.len() == 0 {
                 break;
             }
-            trace!("Sending buffer {:?}", buf);
 
             let bytes_sent = writer.write(&buf).await;
             buf = &buf[bytes_sent..];
+            trace!(
+                "Output Producer: sent {bytes_sent:?}. {:?} bytes remain ",
+                buf.len()
+            );
         }
     }
 }

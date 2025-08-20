@@ -95,16 +95,8 @@ impl DemoServer for StdDemo {
                 let ev = match serv.progress(&mut ph).await {
                     Ok(event) => event,
                     Err(e) => {
-                        match e {
-                            Error::NoRoom {} => {
-                                warn!("NoRoom triggered. Trying again");
-                                continue;
-                            }
-                            _ => {
-                                error!("server  progress failed: {:?}", e); // NoRoom: 2048 Bytes Output buffer
-                                return Err(e);
-                            }
-                        }
+                        error!("server  progress failed: {:?}", e); // NoRoom: 2048 Bytes Output buffer
+                        return Err(e);
                     }
                 };
 
@@ -163,7 +155,7 @@ impl DemoServer for StdDemo {
 
                 // TODO Do some research to find reasonable default buffer lengths
                 let mut buffer_in = [0u8; 512];
-                let mut incomplete_request_buffer = [0u8; 512];
+                let mut request_buffer = [0u8; 512];
 
                 match {
                     let stdio = serv.stdio(ch).await?;
@@ -173,7 +165,7 @@ impl DemoServer for StdDemo {
 
                     SftpHandler::<DemoOpaqueFileHandle, DemoSftpServer, 512>::new(
                         &mut file_server,
-                        &mut incomplete_request_buffer,
+                        &mut request_buffer,
                     )
                     .process_loop(stdio, &mut buffer_in)
                     .await?;
@@ -219,39 +211,25 @@ async fn listen(
 
 #[embassy_executor::main]
 async fn main(spawner: Spawner) {
-    env_logger::builder()
-        .filter_level(log::LevelFilter::Info)
-        .filter_module(
-            "sunset_sftp::sftphandler::sftphandler",
-            log::LevelFilter::Debug,
-        )
-        // .filter_module(
-        //     "sunset_demo_sftp_std::demosftpserver",
-        //     log::LevelFilter::Debug,
-        // )
-        // .filter_module("sunset_sftp::sftphandler", log::LevelFilter::Trace)
-        // .filter_module("sunset_sftp", log::LevelFilter::Trace)
-        // .filter_module("sunset_sftp::sftpsource", log::LevelFilter::Debug)
-        // .filter_module(
-        //     "sunset_sftp::sftphandler::sftpoutputchannelhandler",
-        //     log::LevelFilter::Info,
-        // )
-        // .filter_module("sunset::channel", log::LevelFilter::Trace)
-        // .filter_module("sunset_async::async_sunset", log::LevelFilter::Trace)
-        // .filter_module("sunset::runner", log::LevelFilter::Debug)
-        // .filter_module("sunset::traffic", log::LevelFilter::Trace)
-        // .filter_module("sunset_sftp::sftpsink", log::LevelFilter::Info)
-        // .filter_module("sunset_sftp::sftpsource", log::LevelFilter::Info)
-        // .filter_module("sunset_sftp::sftpserver", log::LevelFilter::Info)
-        // .filter_module("sunset::runner", log::LevelFilter::Info)
-        // .filter_module("sunset::encrypt", log::LevelFilter::Info)
-        // .filter_module("sunset::conn", log::LevelFilter::Info)
-        // .filter_module("sunset::kex", log::LevelFilter::Info)
-        // .filter_module("async_io", log::LevelFilter::Info)
-        // .filter_module("polling", log::LevelFilter::Info)
-        // .filter_module("embassy_net", log::LevelFilter::Info)
-        .format_timestamp_nanos()
-        .init();
+    let log_path = std::env::var("RUST_LOG_FILE").ok();
+
+    let mut builder = env_logger::Builder::new();
+
+    builder.filter_level(log::LevelFilter::Trace);
+    // if std::env::var("RUST_LOG").is_err() {
+    // } else {
+    //     builder.filter_level(log::LevelFilter::Debug);
+    // }
+    builder.format_timestamp_nanos();
+
+    if let Some(path) = log_path {
+        let file = std::fs::File::create(path).expect("Failed to create log file");
+        builder.target(env_logger::Target::Pipe(Box::new(file)));
+    } else {
+        builder.target(env_logger::Target::Stdout);
+    }
+
+    builder.init();
 
     spawner.spawn(main_task(spawner)).unwrap();
 }

@@ -1,6 +1,6 @@
 use crate::protocol::StatusCode;
 
-use crate::requestholder::RequestHolderError;
+use crate::sftphandler::requestholder::RequestHolderError;
 use sunset::Error as SunsetError;
 use sunset::sshwire::WireError;
 
@@ -29,8 +29,7 @@ pub enum SftpError {
     ClientDisconnected,
     /// The [`crate::sftpserver::SftpServer`] failed doing an IO operation
     FileServerError(StatusCode),
-    // A RequestHolder instance throw an error. See [`crate::requestholder::RequestHolderError`]
-    /// A RequestHolder instance threw an error. See `RequestHolderError`
+    /// A RequestHolder instance throw an error. See [`crate::requestholder::RequestHolderError`]
     RequestHolderError(RequestHolderError),
     /// A variant containing a [`WireError`]
     WireError(WireError),
