@@ -1,13 +1,13 @@
 [package]
 name = "sunset-demo-sftp-std"
-version = "0.1.2"
+version = "0.1.0"
 edition = "2021"
 
 [dependencies]
 sunset = { workspace = true, features = ["rsa", "std"] }
 sunset-async.workspace = true
 sunset-demo-common.workspace = true
-sunset-sftp = { version = "0.1.0", path = "../../../sftp", features = ["std"] }
+sunset-sftp = { version = "0.1.0", path = "../../../sftp" }
 
 # 131072 was determined empirically
 embassy-executor = { version = "0.7", features = [
@@ -37,4 +37,3 @@ async-io = "1.6.0"
 critical-section = "1.1"
 rand = { version = "0.8", default-features = false, features = ["getrandom"] }
 sha2 = { version = "0.10", default-features = false }
-fnv = "1.0.7"

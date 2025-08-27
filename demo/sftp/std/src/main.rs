@@ -6,9 +6,9 @@ pub(crate) use sunset_demo_common as demo_common;
 
 use demo_common::{DemoCommon, DemoServer, SSHConfig};
 
-use crate::{
-    demoopaquefilehandle::DemoOpaqueFileHandle, demosftpserver::DemoSftpServer,
-};
+use crate::demosftpserver::DemoSftpServer;
+
+use embedded_io_async::{Read, Write};
 
 use embassy_executor::Spawner;
 use embassy_net::{Stack, StackResources, StaticConfigV4};
@@ -23,8 +23,6 @@ use embassy_sync::channel::Channel;
 #[allow(unused_imports)]
 use log::{debug, error, info, log, trace, warn};
 
-mod demofilehandlemanager;
-mod demoopaquefilehandle;
 mod demosftpserver;
 
 const NUM_LISTENERS: usize = 4;
@@ -89,25 +87,10 @@ impl DemoServer for StdDemo {
     async fn run(&self, serv: &SSHServer<'_>, mut common: DemoCommon) -> Result<()> {
         let chan_pipe = Channel::<SunsetRawMutex, ChanHandle, 1>::new();
 
-        let ssh_loop_inner = async {
+        let prog_loop_inner = async {
             loop {
                 let mut ph = ProgressHolder::new();
-                let ev = match serv.progress(&mut ph).await {
-                    Ok(event) => event,
-                    Err(e) => {
-                        match e {
-                            Error::NoRoom {} => {
-                                warn!("NoRoom triggered. Trying again");
-                                continue;
-                            }
-                            _ => {
-                                error!("server  progress failed: {:?}", e); // NoRoom: 2048 Bytes Output buffer
-                                return Err(e);
-                            }
-                        }
-                    }
-                };
-
+                let ev = serv.progress(&mut ph).await?;
                 trace!("ev {ev:?}");
                 match ev {
                     ServEvent::SessionShell(a) => {
@@ -133,7 +116,7 @@ impl DemoServer for StdDemo {
                                 warn!(
                                 "request for subsystem '{}' not implemented: fail",
                                 a.command()?
-                                );
+                            );
                                 a.fail()?;
                             }
                         }
@@ -145,69 +128,67 @@ impl DemoServer for StdDemo {
             Ok::<_, Error>(())
         };
 
-        let ssh_loop = async {
+        let prog_loop = async {
             info!("prog_loop started");
-            if let Err(e) = ssh_loop_inner.await {
+            if let Err(e) = prog_loop_inner.await {
                 warn!("Prog Loop Exited: {e:?}");
                 return Err(e);
             }
             Ok(())
         };
 
-        #[allow(unreachable_code)]
         let sftp_loop = async {
             loop {
                 let ch = chan_pipe.receive().await;
 
                 info!("SFTP loop has received a channel handle {:?}", ch.num());
 
-                // TODO Do some research to find reasonable default buffer lengths
                 let mut buffer_in = [0u8; 512];
-                let mut incomplete_request_buffer = [0u8; 512];
+                let mut buffer_out = [0u8; 512];
 
                 match {
-                    let stdio = serv.stdio(ch).await?;
+                    let mut stdio = serv.stdio(ch).await?;
                     let mut file_server = DemoSftpServer::new(
                         "./demo/sftp/std/testing/out/".to_string(),
                     );
 
-                    SftpHandler::<DemoOpaqueFileHandle, DemoSftpServer, 512>::new(
-                        &mut file_server,
-                        &mut incomplete_request_buffer,
-                    )
-                    .process_loop(stdio, &mut buffer_in)
-                    .await?;
+                    let mut sftp_handler = SftpHandler::new(&mut file_server);
+                    loop {
+                        let lr = stdio.read(&mut buffer_in).await?;
+                        trace!("SFTP <---- received: {:?}", &buffer_in[0..lr]);
+                        if lr == 0 {
+                            debug!("client disconnected");
+                            break;
+                        }
 
+                        let lw = sftp_handler
+                            .process(&buffer_in[0..lr], &mut buffer_out)
+                            .await?;
+                        if lw > 0 {
+                            stdio.write(&mut buffer_out[0..lw]).await?;
+                            trace!("SFTP ----> Sent: {:?}", &buffer_out[0..lw]);
+                        }
+                    }
                     Ok::<_, Error>(())
                 } {
                     Ok(_) => {
                         warn!("sftp server loop finished gracefully");
-                        return Ok(());
                     }
                     Err(e) => {
-                        error!("sftp server loop finished with an error: {}", e);
-                        return Err(e);
+                        warn!("sftp server loop finished with an error: {}", e)
                     }
                 };
             }
             Ok::<_, Error>(())
         };
 
-        let selected = select(ssh_loop, sftp_loop).await;
-        match selected {
-            embassy_futures::select::Either::First(res) => {
-                warn!("prog_loop finished: {:?}", res);
-                res
-            }
-            embassy_futures::select::Either::Second(res) => {
-                warn!("sftp_loop finished: {:?}", res);
-                res
-            }
-        }
+        let selected = select(prog_loop, sftp_loop).await;
+        error!("Selected finished: {:?}", selected);
+        todo!("Loop terminated: {:?}", selected)
     }
 }
 
-// TODO pool_size should be NUM_LISTENERS but needs a literal
+// TODO: pool_size should be NUM_LISTENERS but needs a literal
 #[embassy_executor::task(pool_size = 4)]
 async fn listen(
     stack: Stack<'static>,
@@ -220,36 +201,16 @@ async fn listen(
 #[embassy_executor::main]
 async fn main(spawner: Spawner) {
     env_logger::builder()
-        .filter_level(log::LevelFilter::Info)
-        .filter_module(
-            "sunset_sftp::sftphandler::sftphandler",
-            log::LevelFilter::Debug,
-        )
-        // .filter_module(
-        //     "sunset_demo_sftp_std::demosftpserver",
-        //     log::LevelFilter::Debug,
-        // )
-        // .filter_module("sunset_sftp::sftphandler", log::LevelFilter::Trace)
-        // .filter_module("sunset_sftp", log::LevelFilter::Trace)
-        // .filter_module("sunset_sftp::sftpsource", log::LevelFilter::Debug)
-        // .filter_module(
-        //     "sunset_sftp::sftphandler::sftpoutputchannelhandler",
-        //     log::LevelFilter::Info,
-        // )
-        // .filter_module("sunset::channel", log::LevelFilter::Trace)
-        // .filter_module("sunset_async::async_sunset", log::LevelFilter::Trace)
-        // .filter_module("sunset::runner", log::LevelFilter::Debug)
-        // .filter_module("sunset::traffic", log::LevelFilter::Trace)
-        // .filter_module("sunset_sftp::sftpsink", log::LevelFilter::Info)
-        // .filter_module("sunset_sftp::sftpsource", log::LevelFilter::Info)
-        // .filter_module("sunset_sftp::sftpserver", log::LevelFilter::Info)
-        // .filter_module("sunset::runner", log::LevelFilter::Info)
-        // .filter_module("sunset::encrypt", log::LevelFilter::Info)
-        // .filter_module("sunset::conn", log::LevelFilter::Info)
-        // .filter_module("sunset::kex", log::LevelFilter::Info)
-        // .filter_module("async_io", log::LevelFilter::Info)
-        // .filter_module("polling", log::LevelFilter::Info)
-        // .filter_module("embassy_net", log::LevelFilter::Info)
+        .filter_level(log::LevelFilter::Debug)
+        .filter_module("sunset::runner", log::LevelFilter::Info)
+        .filter_module("sunset::traffic", log::LevelFilter::Info)
+        .filter_module("sunset::encrypt", log::LevelFilter::Info)
+        .filter_module("sunset::conn", log::LevelFilter::Info)
+        .filter_module("sunset::kex", log::LevelFilter::Info)
+        .filter_module("sunset_async::async_sunset", log::LevelFilter::Info)
+        .filter_module("async_io", log::LevelFilter::Info)
+        .filter_module("polling", log::LevelFilter::Info)
+        .filter_module("embassy_net", log::LevelFilter::Info)
         .format_timestamp_nanos()
         .init();
 

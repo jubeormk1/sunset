@@ -1,26 +1,71 @@
-use num_enum::{FromPrimitive, TryFromPrimitive};
-use sunset::error;
-use sunset::error::Error as SunsetError;
-use sunset::packets::{MessageNumber, Packet, Unknown};
 use sunset::sshwire::{
     BinString, SSHDecode, SSHEncode, SSHSink, SSHSource, TextString, WireError,
     WireResult,
 };
-
 use sunset_sshwire_derive::{SSHDecode, SSHEncode};
+
+#[allow(unused_imports)]
+use log::{debug, error, info, log, trace, warn};
+use num_enum::FromPrimitive;
+use paste::paste;
+
+/// SFTP Minimum packet length is 9 bytes corresponding with `SSH_FXP_INIT`
+pub const SFTP_MINIMUM_PACKET_LEN: usize = 9;
+
+/// SFTP packets have the packet type after a u32 length field
+pub const SFTP_FIELD_ID_INDEX: usize = 4;
+/// SFTP packets ID length is 1 byte
+// pub const SFTP_FIELD_ID_LEN: usize = 1;
+/// SFTP packets start with the length field
+pub const SFTP_FIELD_LEN_INDEX: usize = 0;
+/// SFTP packets length field us u32
+pub const SFTP_FIELD_LEN_LENGTH: usize = 4;
+
+// SSH_FXP_WRITE SFTP Packet definition used to decode long packets that do not fit in one buffer
+
+/// SFTP SSH_FXP_WRITE Packet cannot be shorter than this (len:4+pnum:1+rid:4+hand:4+0+data:4+0 bytes = 17 bytes) [draft-ietf-secsh-filexfer-02](https://datatracker.ietf.org/doc/html/draft-ietf-secsh-filexfer-02#autoid-10)
+// pub const SFTP_MINIMUM_WRITE_PACKET_LEN: usize = 17;
+
+/// SFTP SSH_FXP_WRITE Packet request id field index  [draft-ietf-secsh-filexfer-02](https://datatracker.ietf.org/doc/html/draft-ietf-secsh-filexfer-02#autoid-10)
+pub const SFTP_WRITE_REQID_INDEX: usize = 5;
+
+/// SFTP SSH_FXP_WRITE Packet handle field index  [draft-ietf-secsh-filexfer-02](https://datatracker.ietf.org/doc/html/draft-ietf-secsh-filexfer-02#autoid-10)
+// pub const SFTP_WRITE_HANDLE_INDEX: usize = 9;
 
 // TODO is utf8 enough, or does this need to be an opaque binstring?
 #[derive(Debug, SSHEncode, SSHDecode)]
 pub struct Filename<'a>(TextString<'a>);
 
-#[derive(Debug, SSHEncode, SSHDecode)]
-struct FileHandle<'a>(pub BinString<'a>);
+impl<'a> From<&'a str> for Filename<'a> {
+    fn from(s: &'a str) -> Self {
+        Filename(TextString(s.as_bytes()))
+    }
+}
+
+impl<'a> Filename<'a> {
+    pub fn as_str(&self) -> Result<&'a str, WireError> {
+        core::str::from_utf8(self.0.0).map_err(|_| WireError::BadString)
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, SSHEncode, SSHDecode)]
+pub struct FileHandle<'a>(pub BinString<'a>);
 
 /// The reference implementation we are working on is 3, this is, https://datatracker.ietf.org/doc/html/draft-ietf-secsh-filexfer-02
-const SFTP_VERSION: u32 = 3;
+pub const SFTP_VERSION: u32 = 3;
+
+/// The SFTP version of the client
 #[derive(Debug, SSHEncode, SSHDecode)]
-pub struct InitVersion {
+pub struct InitVersionClient {
     // No ReqId for SSH_FXP_INIT
+    pub version: u32,
+    // TODO variable number of ExtPair
+}
+
+/// The lowers SFTP version from the client and the server
+#[derive(Debug, SSHEncode, SSHDecode)]
+pub struct InitVersionLowest {
+    // No ReqId for SSH_FXP_VERSION
     pub version: u32,
     // TODO variable number of ExtPair
 }
@@ -54,13 +99,18 @@ pub struct Write<'a> {
 // Responses
 
 #[derive(Debug, SSHEncode, SSHDecode)]
+pub struct PathInfo<'a> {
+    pub path: TextString<'a>,
+}
+
+#[derive(Debug, SSHEncode, SSHDecode)]
 pub struct Status<'a> {
     pub code: StatusCode,
     pub message: TextString<'a>,
     pub lang: TextString<'a>,
 }
 
-#[derive(Debug, SSHEncode, SSHDecode)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, SSHEncode, SSHDecode)]
 pub struct Handle<'a> {
     pub handle: FileHandle<'a>,
 }
@@ -82,9 +132,12 @@ pub struct NameEntry<'a> {
 }
 
 #[derive(Debug)]
-pub struct Name<'de>(pub Vec<NameEntry<'de>>);
+pub struct Name<'a>(pub Vec<NameEntry<'a>>);
 
-impl<'de> SSHDecode<'de> for Name<'de> {
+impl<'a: 'de, 'de> SSHDecode<'de> for Name<'a>
+where
+    'de: 'a,
+{
     fn dec<S>(s: &mut S) -> WireResult<Self>
     where
         S: SSHSource<'de>,
@@ -101,7 +154,7 @@ impl<'de> SSHDecode<'de> for Name<'de> {
     }
 }
 
-impl SSHEncode for Name<'_> {
+impl<'a> SSHEncode for Name<'a> {
     fn enc(&self, s: &mut dyn SSHSink) -> WireResult<()> {
         (self.0.len() as u32).enc(s)?;
 
@@ -164,6 +217,7 @@ pub struct ExtPair<'a> {
     pub data: BinString<'a>,
 }
 
+/// Files attributes to describe Files as SFTP v3 specification
 #[derive(Debug, Default)]
 pub struct Attrs {
     // flags: u32, defines used attributes
@@ -278,233 +332,374 @@ impl<'de> SSHDecode<'de> for Attrs {
         // TODO: Implement extensions
         // if flags & AttrsFlags::SSH_FILEXFER_ATTR_EXTENDED != 0{
 
-        //     todo!("Not implemented");
-        // }
-
         Ok(attrs)
     }
 }
 
-#[derive(Debug)]
-pub enum Error {
-    UnknownPacket { number: u8 },
-}
-
-pub type Result<T, E = Error> = core::result::Result<T, E>;
-
-// impl From<Error> for SunsetError {
-//     fn from(error: Error) -> SunsetError {
-//         SunsetError::Custom {
-//             msg: match error {
-//                 Error::UnknownPacket { number } => {
-//                     format_args!("Unknown SFTP packet: {}", number)
-//                 }
-//             },
-//         }
-//     }
-// }
-
 macro_rules! sftpmessages {
     (
-        $( ( $message_num:literal,
-            $SpecificPacketVariant:ident,
-            $SpecificPacketType:ty,
-            $SSH_FXP_NAME:ident
-            ),
-             )*
+        init: {
+            $( ( $init_message_num:tt,
+                $init_packet_variant:ident,
+                $init_packet_type:ty,
+                $init_ssh_fxp_name:literal
+                ),
+                 )*
+        },
+        request: {
+            $( ( $request_message_num:tt,
+                $request_packet_variant:ident,
+                $request_packet_type:ty,
+                $request_ssh_fxp_name:literal
+                ),
+                 )*
+        },
+        response: {
+            $( ( $response_message_num:tt,
+                $response_packet_variant:ident,
+                $response_packet_type:ty,
+                $response_ssh_fxp_name:literal
+                ),
+                 )*
+                },
     ) => {
-        #[derive(Debug, Clone)]
-        #[repr(u8)]
-        #[allow(non_camel_case_types)]
-        pub enum SftpNum {
-            // variants are eg
-            // SSH_FXP_OPEN = 3,
-            $(
-            $SSH_FXP_NAME = $message_num,
-            )*
+        paste! {
+            /// Represent a subset of the SFTP packet types defined by draft-ietf-secsh-filexfer-02
+            #[derive(Debug, Clone, FromPrimitive, SSHEncode)]
+            #[repr(u8)]
+            #[allow(non_camel_case_types)]
+            pub enum SftpNum {
+                $(
+                    #[sshwire(variant = $init_ssh_fxp_name)]
+                    [<$init_ssh_fxp_name:upper>] = $init_message_num,
+                )*
+
+                $(
+                    #[sshwire(variant = $request_ssh_fxp_name)]
+                    [<$request_ssh_fxp_name:upper>] = $request_message_num,
+                )*
+
+                $(
+                    #[sshwire(variant = $response_ssh_fxp_name)]
+                    [<$response_ssh_fxp_name:upper>] = $response_message_num,
+                )*
+
+                #[sshwire(unknown)]
+                #[num_enum(catch_all)]
+                Other(u8),
+            }
+        } // paste
+
+        impl<'de> SSHDecode<'de> for SftpNum {
+            fn dec<S>(s: &mut S) -> WireResult<Self>
+            where
+                S: SSHSource<'de>,
+            {
+                Ok(SftpNum::from(u8::dec(s)?))
+            }
+        }
+        paste!{
+        impl From<SftpNum> for u8{
+            fn from(sftp_num: SftpNum) -> u8 {
+                match sftp_num {
+                    $(
+                        SftpNum::[<$init_ssh_fxp_name:upper>] => $init_message_num,
+                    )*
+                    $(
+                        SftpNum::[<$request_ssh_fxp_name:upper>] => $request_message_num,
+                    )*
+                    $(
+                        SftpNum::[<$response_ssh_fxp_name:upper>] => $response_message_num,
+                    )*
+
+                    SftpNum::Other(number) => number // Other, not in the enum definition
+
+                }
+            }
+
         }
 
+        } //paste
+
         impl SftpNum {
+            fn is_init(&self) -> bool {
+                (1..=1).contains(&(u8::from(self.clone())))
+            }
+
             fn is_request(&self) -> bool {
                 // TODO SSH_FXP_EXTENDED
-                (2..=99).contains(&(self.clone() as u8))
+                (3..=20).contains(&(u8::from(self.clone())))
             }
 
             fn is_response(&self) -> bool {
                 // TODO SSH_FXP_EXTENDED_REPLY
-                (100..=199).contains(&(self.clone() as u8))
+                (100..=105).contains(&(u8::from(self.clone())))
+                ||(2..=2).contains(&(u8::from(self.clone())))
             }
         }
 
-        impl TryFrom<u8> for SftpNum {
-            type Error = Error;
-            fn try_from(v: u8) -> Result<Self> {
-                match v {
+
+        /// Top level SSH packet enum
+        ///
+        /// It helps identifying the SFTP Packet type and handling it accordingly
+        /// This is done using the SFTP field type
+        #[derive(Debug)]
+        pub enum SftpPacket<'a> {
+                $(
+                    $init_packet_variant($init_packet_type),
+                )*
+                $(
+                    $request_packet_variant(ReqId, $request_packet_type),
+                )*
+                $(
+                    $response_packet_variant(ReqId, $response_packet_type),
+                )*
+
+        }
+
+
+        impl SSHEncode for SftpPacket<'_> {
+            fn enc(&self, s: &mut dyn SSHSink) -> WireResult<()> {
+                let t = u8::from(self.sftp_num());
+                t.enc(s)?;
+                match self {
                     // eg
-                    // 3 => Ok(SftpNum::SSH_FXP_OPEN)
+                    // SftpPacket::KexInit(p) => {
+                    // ...
                     $(
-                    $message_num => Ok(SftpNum::$SSH_FXP_NAME),
+                    SftpPacket::$init_packet_variant(p) => {
+                        p.enc(s)?
+                    }
                     )*
-                    _ => {
-                        Err(Error::UnknownPacket { number: v })
+                    $(
+                    SftpPacket::$request_packet_variant(id, p) => {
+                        id.enc(s)?;
+                        p.enc(s)?
+                    }
+                    )*
+                    $(
+                    SftpPacket::$response_packet_variant(id, p) => {
+                        id.enc(s)?;
+                        p.enc(s)?
+                    }
+                    )*
+                };
+                Ok(())
+            }
+        }
+
+        paste!{
+
+
+        impl<'a: 'de, 'de> SSHDecode<'de> for SftpPacket<'a>
+        where 'de: 'a // This implies that both lifetimes are equal
+        {
+            fn dec<S>(s: &mut S) -> WireResult<Self>
+            where S: SSHSource<'de> {
+                let packet_type_number = u8::dec(s)?;
+
+                let packet_type = SftpNum::from(packet_type_number);
+
+                let decoded_packet = match packet_type {
+                    $(
+                        SftpNum::[<$init_ssh_fxp_name:upper>] => {
+
+                            let inner_type = <$init_packet_type>::dec(s)?;
+                            SftpPacket::$init_packet_variant(inner_type)
+
+                        },
+                    )*
+                    $(
+                        SftpNum::[<$request_ssh_fxp_name:upper>] => {
+                            let req_id = <ReqId>::dec(s)?;
+                            let inner_type = <$request_packet_type>::dec(s)?;
+                            SftpPacket::$request_packet_variant(req_id,inner_type)
+
+                        },
+                    )*
+                    $(
+                        SftpNum::[<$response_ssh_fxp_name:upper>] => {
+                            let req_id = <ReqId>::dec(s)?;
+                            let inner_type = <$response_packet_type>::dec(s)?;
+                            SftpPacket::$response_packet_variant(req_id,inner_type)
+
+                        },
+                    )*
+                    _ => return Err(WireError::UnknownPacket { number: packet_type_number })
+                };
+                Ok(decoded_packet)
+            }
+        }
+        } // paste
+
+        impl<'a> SftpPacket<'a> {
+            /// Maps `SpecificPacketVariant` to `message_num`
+            pub fn sftp_num(&self) -> SftpNum {
+                match self {
+                    // eg
+                    // SftpPacket::Open(_) => {
+                    // ..
+                    $(
+                    SftpPacket::$init_packet_variant(_) => {
+
+                        SftpNum::from($init_message_num as u8)
+                    }
+                    )*
+                    $(
+                    SftpPacket::$request_packet_variant(_,_) => {
+
+                        SftpNum::from($request_message_num as u8)
+                    }
+                    )*
+                    $(
+                    SftpPacket::$response_packet_variant(_,_) => {
+
+                        SftpNum::from($response_message_num as u8)
+                    }
+                    )*
+                }
+            }
+
+            /// Encode a request.
+            ///
+            /// Used by a SFTP client. Does not include the length field.
+            pub fn encode_request(&self, id: ReqId, s: &mut dyn SSHSink) -> WireResult<()> {
+                if !self.sftp_num().is_request() {
+                    return Err(WireError::PacketWrong)
+                    // return Err(Error::bug())
+                    // TODO: I understand that it would be a bad call of encode_response and
+                    // therefore a bug, bug Error::bug() is not compatible with WireResult
+                }
+
+                // packet type
+                self.sftp_num().enc(s)?;
+                // request ID
+                id.0.enc(s)?;
+                // contents
+                self.enc(s)
+            }
+
+            /// Decode a response.
+            ///
+            /// Used by a SFTP client. Does not include the length field.
+            pub fn decode_response<'de, S>(s: &mut S) -> WireResult<(ReqId, Self)>
+                where
+                S: SSHSource<'de>,
+                'a: 'de, // 'a must outlive 'de and 'de must outlive 'a so they have matching lifetimes
+                'de: 'a
+            {
+                let num = SftpNum::from(u8::dec(s)?);
+
+                if !num.is_response() {
+                    return Err(WireError::PacketWrong)
+                    // return error::SSHProto.fail();
+                    // TODO: Not an error in the SSHProtocol rather the SFTP Protocol.
+                }
+
+                let id = ReqId(u32::dec(s)?);
+                Ok((id, Self::dec(s)?))
+            }
+
+
+            /// Decode a request. Includes Initialization packets
+            ///
+            /// Used by a SFTP server. Does not include the length field.
+            ///
+            /// It will fail if the received packet is a response
+            pub fn decode_request<'de, S>(s: &mut S) -> WireResult<Self>
+                where
+                S: SSHSource<'de>,
+                'a: 'de, // 'a must outlive 'de and 'de must outlive 'a so they have matching lifetimes
+                'de: 'a
+            {
+
+                // let sftp_packet = Self::dec(s)?;
+                match Self::dec(s) {
+                    Ok(sftp_packet)=> {
+                        if (!sftp_packet.sftp_num().is_request()
+                            && !sftp_packet.sftp_num().is_init())
+                        {
+                            Err(WireError::PacketWrong)
+                        }else{
+                            Ok(sftp_packet)
+
+                        }
+                    },
+                    Err(e) => {
+                        Err(e)
                     }
                 }
             }
+
+            /// Encode a response.
+            ///
+            /// Used by a SFTP server. Does not include the length field.
+            ///
+            /// Fails if the encoded SFTP Packet is not a response
+            pub fn encode_response(&self, s: &mut dyn SSHSink) -> WireResult<()> {
+
+                if !self.sftp_num().is_response() {
+                    return Err(WireError::PacketWrong)
+                    // return Err(Error::bug())
+                    // TODO: I understand that it would be a bad call of encode_response and
+                    // therefore a bug, bug Error::bug() is not compatible with WireResult
+                }
+
+                self.enc(s)
+            }
+
         }
 
-        // /// Top level SSH packet enum
-        // #[derive(Debug)]
-        // pub enum SftpPacket<'a> {
-        //     // eg Open(Open<'a>),
-        //     $(
-        //     $SpecificPacketVariant($SpecificPacketType),
-        //     )*
-        // }
+        $(
+        impl<'a> From<$init_packet_type> for SftpPacket<'a> {
+            fn from(s: $init_packet_type) -> SftpPacket<'a> {
+                SftpPacket::$init_packet_variant(s) //find me
+            }
+        }
+        )*
+        $(
+        /// **Warning**: No Sequence Id can be infered from a Packet Type
+        impl<'a> From<$request_packet_type> for SftpPacket<'a> {
+            fn from(s: $request_packet_type) -> SftpPacket<'a> {
+                warn!("Casting from {:?} to SftpPacket cannot set Request Id",$request_ssh_fxp_name);
+                SftpPacket::$request_packet_variant(ReqId(0), s)
+            }
+        }
+        )*
+        $(
+        /// **Warning**: No Sequence Id can be infered from a Packet Type
+        impl<'a> From<$response_packet_type> for SftpPacket<'a> {
+            fn from(s: $response_packet_type) -> SftpPacket<'a> {
+                warn!("Casting from {:?} to SftpPacket cannot set Request Id",$response_ssh_fxp_name);
+                SftpPacket::$response_packet_variant(ReqId(0), s)
+            }
+        }
+        )*
 
-// impl SSHEncode for SftpPacket<'_> {
-//     fn enc(&self, s: &mut dyn SSHSink) -> WireResult<()> {
-//         let t = self.message_num() as u8;
-//         t.enc(s)?;
-//         match self {
-//             // eg
-//             // Packet::KexInit(p) => {
-//             // ...
-//             $(
-//             Packet::$SpecificPacketVariant(p) => {
-//                 p.enc(s)?
-//             }
-//             )*
-//         };
-//         Ok(())
-//     }
-// }
+    }; // main macro
 
-// impl<'de: 'a, 'a> SSHDecode<'de> for SftpPacket<'a> {
-//     fn dec<S>(s: &mut S) -> WireResult<Self>
-//     where S: SSHSource<'de> {
-//         let msg_num = u8::dec(s)?;
-//         let ty = MessageNumber::try_from(msg_num);
-//         let ty = match ty {
-//             Ok(t) => t,
-//             Err(_) => return Err(WireError::UnknownPacket { number: msg_num })
-//         };
+} // sftpmessages macro
 
-//         // Decode based on the message number
-//         let p = match ty {
-//             // eg
-//             // MessageNumber::SSH_MSG_KEXINIT => Packet::KexInit(
-//             // ...
-//             $(
-//             MessageNumber::$SSH_FXP_NAME => Packet::$SpecificPacketVariant(SSHDecode::dec(s)?),
-//             )*
-//         };
-//         Ok(p)
-//     }
-// }
+sftpmessages! [
 
+        init:{
+            (1, Init, InitVersionClient, "ssh_fxp_init"),
+            (2, Version, InitVersionLowest, "ssh_fxp_version"),
+        },
 
+        request: {
+            (3, Open, Open<'a>, "ssh_fxp_open"),
+            (4, Close, Close<'a>, "ssh_fxp_close"),
+            (5, Read, Read<'a>, "ssh_fxp_read"),
+            (6, Write, Write<'a>, "ssh_fxp_write"),
+            (16, PathInfo, PathInfo<'a>, "ssh_fxp_realpath"),
+        },
 
-// impl<'a> SftpPacket<'a> {
-//     pub fn sftp_num(&self) -> SftpNum {
-//         match self {
-//             // eg
-//             // SftpPacket::Open(_) => {
-//             // ..
-//             $(
-//             SftpPacket::$SpecificPacketVariant(_) => {
-//                 MessageNumber::$SSH_FXP_NAME
-//             }
-//             )*
-//         }
-//     }
+        response: {
+            (101, Status, Status<'a>, "ssh_fxp_status"),
+            (102, Handle, Handle<'a>, "ssh_fxp_handle"),
+            (103, Data, Data<'a>, "ssh_fxp_data"),
+            (104, Name, Name<'a>, "ssh_fxp_name"),
 
-//     /// Encode a request.
-//     ///
-//     /// Used by a SFTP client. Does not include the length field.
-//     pub fn encode_request(&self, id: ReqId, s: &mut dyn SSHSink) -> Result<()> {
-//         if !self.sftp_num().is_request() {
-//             return Err(Error::bug())
-//         }
-
-//         // packet type
-//         self.sftp_num().enc(s)?;
-//         // request ID
-//         id.0.enc(s)?;
-//         // contents
-//         self.enc(s)
-//     }
-
-//     /// Decode a response.
-//     ///
-//     /// Used by a SFTP client. Does not include the length field.
-//     pub fn decode_response(s: &mut dyn SSHSource) -> WireResult<(ReqId, Self)> {
-//         let num = SftpNum::try_from(u8::dec(s)?)?;
-
-//         if !num.is_response() {
-//             return error::SSHProto.fail();
-//         }
-
-//         let id = ReqId(u32::dec(s)?);
-//         Ok((id, Self::dec(s)))
-//     }
-
-//     /// Decode a request.
-//     ///
-//     /// Used by a SFTP server. Does not include the length field.
-//     pub fn decode_request(s: &mut dyn SSHSource) -> WireResult<(ReqId, Self)> {
-//         let num = SftpNum::try_from(u8::dec(s)?)?;
-
-//         if !num.is_request() {
-//             return error::SSHProto.fail();
-//         }
-
-//         let id = ReqId(u32::dec(s)?);
-//         Ok((id, Self::dec(s)))
-//     }
-
-//     /// Encode a response.
-//     ///
-//     /// Used by a SFTP server. Does not include the length field.
-//     pub fn encode_response(&self, id: ReqId, s: &mut dyn SSHSink) -> Result<()> {
-//         if !self.sftp_num().is_response() {
-//             return Err(Error::bug())
-//         }
-
-//         // packet type
-//         self.sftp_num().enc(s)?;
-//         // request ID
-//         id.0.enc(s)?;
-//         // contents
-//         self.enc(s)
-//     }
-// }
-
-// $(
-// impl<'a> From<$SpecificPacketType> for SftpPacket<'a> {
-//     fn from(s: $SpecificPacketType) -> SftpPacket<'a> {
-//         SftpPacket::$SpecificPacketVariant(s)
-//     }
-// }
-// )*
-
-} } // macro
-
-sftpmessages![
-
-// Message number ranges are also used by Sftpnum::is_request and is_response.
-
-(1, Init, InitVersion, SSH_FXP_INIT),
-(2, Version, InitVersion, SSH_FXP_VERSION),
-
-// Requests
-(3, Open, Open<'a>, SSH_FXP_OPEN),
-(4, Close, Close<'a>, SSH_FXP_CLOSE),
-(5, Read, Read<'a>, SSH_FXP_READ),
-
-// Responses
-(101, Status, Status<'a>, SSH_FXP_STATUS),
-(102, Handle, Handle<'a>, SSH_FXP_HANDLE),
-(103, Data, Data<'a>, SSH_FXP_DATA),
-(104, Name, Name<'a>, SSH_FXP_NAME),
-
+        },
 ];
