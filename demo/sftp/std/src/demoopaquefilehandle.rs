@@ -1,5 +1,4 @@
-use sunset_sftp::handles::OpaqueFileHandle;
-use sunset_sftp::protocol::FileHandle;
+use sunset_sftp::{FileHandle, OpaqueFileHandle};
 
 use sunset::sshwire::{BinString, WireError};
 

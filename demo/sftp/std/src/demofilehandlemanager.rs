@@ -1,5 +1,6 @@
-use sunset_sftp::handles::{OpaqueFileHandle, OpaqueFileHandleManager, PathFinder};
-use sunset_sftp::protocol::StatusCode;
+use sunset_sftp::{
+    OpaqueFileHandle, OpaqueFileHandleManager, PathFinder, StatusCode,
+};
 
 use std::collections::HashMap; // Not enforced. Only for std. For no_std environments other solutions can be used to store Key, Value
 
@@ -55,9 +56,5 @@ where
 
     fn get_private_as_ref(&self, opaque_handle: &K) -> Option<&V> {
         self.handle_map.get(opaque_handle)
-    }
-
-    fn get_private_as_mut_ref(&mut self, opaque_handle: &K) -> Option<&mut V> {
-        self.handle_map.get_mut(opaque_handle)
     }
 }

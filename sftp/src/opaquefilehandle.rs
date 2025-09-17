@@ -1,4 +1,4 @@
-use crate::protocol::FileHandle;
+use crate::FileHandle;
 
 use sunset::sshwire::WireResult;
 
@@ -61,9 +61,6 @@ where
 
     /// Returns true if the opaque handle exist
     fn opaque_handle_exist(&self, opaque_handle: &K) -> bool;
-
-    /// given the opaque_handle returns a reference to the associated private handle
-    fn get_private_as_mut_ref(&mut self, opaque_handle: &K) -> Option<&mut V>;
 
     /// given the opaque_handle returns a reference to the associated private handle
     fn get_private_as_ref(&self, opaque_handle: &K) -> Option<&V>;

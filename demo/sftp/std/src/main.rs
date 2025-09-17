@@ -1,12 +1,14 @@
 use sunset::*;
 use sunset_async::{ProgressHolder, SSHServer, SunsetMutex, SunsetRawMutex};
-use sunset_sftp::SftpHandler;
+use sunset_sftp::{RequestHolder, SftpHandler};
 
 pub(crate) use sunset_demo_common as demo_common;
 
 use demo_common::{DemoCommon, DemoServer, SSHConfig};
 
-use crate::demosftpserver::DemoSftpServer;
+use crate::{
+    demoopaquefilehandle::DemoOpaqueFileHandle, demosftpserver::DemoSftpServer,
+};
 
 use embedded_io_async::{Read, Write};
 
@@ -23,6 +25,8 @@ use embassy_sync::channel::Channel;
 #[allow(unused_imports)]
 use log::{debug, error, info, log, trace, warn};
 
+mod demofilehandlemanager;
+mod demoopaquefilehandle;
 mod demosftpserver;
 
 const NUM_LISTENERS: usize = 4;
@@ -143,8 +147,13 @@ impl DemoServer for StdDemo {
 
                 info!("SFTP loop has received a channel handle {:?}", ch.num());
 
+                // TODO: Do some research to find reasonable default buffer lengths
                 let mut buffer_in = [0u8; 512];
-                let mut buffer_out = [0u8; 512];
+                let mut buffer_out = [0u8; 384];
+                let mut incomplete_request_buffer = [0u8; 128]; // TODO: Find a non arbitrary length
+
+                let mut incomplete_request_holder =
+                    RequestHolder::new(&mut incomplete_request_buffer);
 
                 match {
                     let mut stdio = serv.stdio(ch).await?;
@@ -152,7 +161,11 @@ impl DemoServer for StdDemo {
                         "./demo/sftp/std/testing/out/".to_string(),
                     );
 
-                    let mut sftp_handler = SftpHandler::new(&mut file_server);
+                    let mut sftp_handler =
+                        SftpHandler::<DemoOpaqueFileHandle, DemoSftpServer>::new(
+                            &mut file_server,
+                            // &mut incomplete_request_buffer,
+                        );
                     loop {
                         let lr = stdio.read(&mut buffer_in).await?;
                         trace!("SFTP <---- received: {:?}", &buffer_in[0..lr]);
@@ -162,7 +175,11 @@ impl DemoServer for StdDemo {
                         }
 
                         let lw = sftp_handler
-                            .process(&buffer_in[0..lr], &mut buffer_out)
+                            .process(
+                                &buffer_in[0..lr],
+                                &mut incomplete_request_holder,
+                                &mut buffer_out,
+                            )
                             .await?;
                         if lw > 0 {
                             stdio.write(&mut buffer_out[0..lw]).await?;
@@ -173,9 +190,11 @@ impl DemoServer for StdDemo {
                 } {
                     Ok(_) => {
                         warn!("sftp server loop finished gracefully");
+                        return Ok(());
                     }
                     Err(e) => {
-                        warn!("sftp server loop finished with an error: {}", e)
+                        error!("sftp server loop finished with an error: {}", e);
+                        return Err(e);
                     }
                 };
             }
@@ -183,8 +202,16 @@ impl DemoServer for StdDemo {
         };
 
         let selected = select(prog_loop, sftp_loop).await;
-        error!("Selected finished: {:?}", selected);
-        todo!("Loop terminated: {:?}", selected)
+        match selected {
+            embassy_futures::select::Either::First(res) => {
+                warn!("prog_loop finished: {:?}", res);
+                res
+            }
+            embassy_futures::select::Either::Second(res) => {
+                warn!("sftp_loop finished: {:?}", res);
+                res
+            }
+        }
     }
 }
 
