@@ -10,15 +10,19 @@ use num_enum::FromPrimitive;
 use paste::paste;
 
 /// SFTP Minimum packet length is 9 bytes corresponding with `SSH_FXP_INIT`
+#[allow(unused)]
 pub const SFTP_MINIMUM_PACKET_LEN: usize = 9;
 
 /// SFTP packets have the packet type after a u32 length field
+#[allow(unused)]
 pub const SFTP_FIELD_ID_INDEX: usize = 4;
 /// SFTP packets ID length is 1 byte
 // pub const SFTP_FIELD_ID_LEN: usize = 1;
 /// SFTP packets start with the length field
+#[allow(unused)]
 pub const SFTP_FIELD_LEN_INDEX: usize = 0;
 /// SFTP packets length field us u32
+#[allow(unused)]
 pub const SFTP_FIELD_LEN_LENGTH: usize = 4;
 
 // SSH_FXP_WRITE SFTP Packet definition used to decode long packets that do not fit in one buffer
@@ -605,15 +609,16 @@ macro_rules! sftpmessages {
             ///
             /// Used by a SFTP server. Does not include the length field.
             ///
-            /// It will fail if the received packet is a response
+            /// It will fail if the received packet is a response, no valid or incomplete packet
             pub fn decode_request<'de, S>(s: &mut S) -> WireResult<Self>
                 where
                 S: SSHSource<'de>,
                 'a: 'de, // 'a must outlive 'de and 'de must outlive 'a so they have matching lifetimes
                 'de: 'a
             {
+                let packet_length = u32::dec(s)?;
+                trace!("Packet field len = {:?}, buffer len = {:?}", packet_length, s.remaining());
 
-                // let sftp_packet = Self::dec(s)?;
                 match Self::dec(s) {
                     Ok(sftp_packet)=> {
                         if (!sftp_packet.sftp_num().is_request()
