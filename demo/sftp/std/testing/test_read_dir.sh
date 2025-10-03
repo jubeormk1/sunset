@@ -22,12 +22,9 @@ ls
 echo "Uploading files to ${REMOTE_USER}@${REMOTE_HOST}..."
 
 # Upload all files
-sftp -vvv -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR ${REMOTE_USER}@${REMOTE_HOST}  << EOF
+sftp -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR ${REMOTE_USER}@${REMOTE_HOST} << EOF
 $(printf 'put ./%s\n' "${FILES[@]}")
-ls -lh
+ls
 bye
 EOF
-
-echo "Cleaning up local files..."
-rm -f -r ./*_random ./out/*_random
 

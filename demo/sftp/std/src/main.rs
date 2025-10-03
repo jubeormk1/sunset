@@ -1,6 +1,6 @@
 use sunset::*;
 use sunset_async::{ProgressHolder, SSHServer, SunsetMutex, SunsetRawMutex};
-use sunset_sftp::{RequestHolder, SftpHandler};
+use sunset_sftp::SftpHandler;
 
 pub(crate) use sunset_demo_common as demo_common;
 
@@ -9,8 +9,6 @@ use demo_common::{DemoCommon, DemoServer, SSHConfig};
 use crate::{
     demoopaquefilehandle::DemoOpaqueFileHandle, demosftpserver::DemoSftpServer,
 };
-
-use embedded_io_async::{Read, Write};
 
 use embassy_executor::Spawner;
 use embassy_net::{Stack, StackResources, StaticConfigV4};
@@ -141,22 +139,20 @@ impl DemoServer for StdDemo {
             Ok(())
         };
 
+        #[allow(unreachable_code)]
         let sftp_loop = async {
             loop {
                 let ch = chan_pipe.receive().await;
 
                 info!("SFTP loop has received a channel handle {:?}", ch.num());
 
-                // TODO: Do some research to find reasonable default buffer lengths
+                // TODO Do some research to find reasonable default buffer lengths
                 let mut buffer_in = [0u8; 512];
                 let mut buffer_out = [0u8; 384];
-                let mut incomplete_request_buffer = [0u8; 128]; // TODO: Find a non arbitrary length
-
-                let mut incomplete_request_holder =
-                    RequestHolder::new(&mut incomplete_request_buffer);
+                let mut incomplete_request_buffer = [0u8; 128];
 
                 match {
-                    let mut stdio = serv.stdio(ch).await?;
+                    let stdio = serv.stdio(ch).await?;
                     let mut file_server = DemoSftpServer::new(
                         "./demo/sftp/std/testing/out/".to_string(),
                     );
@@ -164,28 +160,13 @@ impl DemoServer for StdDemo {
                     let mut sftp_handler =
                         SftpHandler::<DemoOpaqueFileHandle, DemoSftpServer>::new(
                             &mut file_server,
-                            // &mut incomplete_request_buffer,
+                            &mut incomplete_request_buffer,
                         );
-                    loop {
-                        let lr = stdio.read(&mut buffer_in).await?;
-                        trace!("SFTP <---- received: {:?}", &buffer_in[0..lr]);
-                        if lr == 0 {
-                            debug!("client disconnected");
-                            break;
-                        }
 
-                        let lw = sftp_handler
-                            .process(
-                                &buffer_in[0..lr],
-                                &mut incomplete_request_holder,
-                                &mut buffer_out,
-                            )
-                            .await?;
-                        if lw > 0 {
-                            stdio.write(&mut buffer_out[0..lw]).await?;
-                            trace!("SFTP ----> Sent: {:?}", &buffer_out[0..lw]);
-                        }
-                    }
+                    sftp_handler
+                        .process_loop(stdio, &mut buffer_in, &mut buffer_out)
+                        .await?;
+
                     Ok::<_, Error>(())
                 } {
                     Ok(_) => {
@@ -215,7 +196,7 @@ impl DemoServer for StdDemo {
     }
 }
 
-// TODO: pool_size should be NUM_LISTENERS but needs a literal
+// TODO pool_size should be NUM_LISTENERS but needs a literal
 #[embassy_executor::task(pool_size = 4)]
 async fn listen(
     stack: Stack<'static>,
@@ -230,6 +211,8 @@ async fn main(spawner: Spawner) {
     env_logger::builder()
         .filter_level(log::LevelFilter::Debug)
         .filter_module("sunset::runner", log::LevelFilter::Info)
+        .filter_module("sunset_sftp::sftpsink", log::LevelFilter::Info)
+        .filter_module("sunset_sftp::sftpsource", log::LevelFilter::Info)
         .filter_module("sunset::traffic", log::LevelFilter::Info)
         .filter_module("sunset::encrypt", log::LevelFilter::Info)
         .filter_module("sunset::conn", log::LevelFilter::Info)

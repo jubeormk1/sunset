@@ -27,16 +27,23 @@ pub const SFTP_FIELD_LEN_LENGTH: usize = 4;
 
 // SSH_FXP_WRITE SFTP Packet definition used to decode long packets that do not fit in one buffer
 
-/// SFTP SSH_FXP_WRITE Packet cannot be shorter than this (len:4+pnum:1+rid:4+hand:4+0+data:4+0 bytes = 17 bytes) [draft-ietf-secsh-filexfer-02](https://datatracker.ietf.org/doc/html/draft-ietf-secsh-filexfer-02#autoid-10)
+/// SFTP SSH_FXP_WRITE Packet cannot be shorter than this (len:4+pnum:1+rid:4+hand:4+0+data:4+0 bytes = 17 bytes) [draft-ietf-secsh-filexfer-02](https://datatracker.ietf.org/doc/html/draft-ietf-secsh-filexfer-02#section-6.4)
 // pub const SFTP_MINIMUM_WRITE_PACKET_LEN: usize = 17;
 
-/// SFTP SSH_FXP_WRITE Packet request id field index  [draft-ietf-secsh-filexfer-02](https://datatracker.ietf.org/doc/html/draft-ietf-secsh-filexfer-02#autoid-10)
+/// SFTP SSH_FXP_WRITE Packet request id field index  [draft-ietf-secsh-filexfer-02](https://datatracker.ietf.org/doc/html/draft-ietf-secsh-filexfer-02#section-6.4)
 pub const SFTP_WRITE_REQID_INDEX: usize = 5;
 
-/// SFTP SSH_FXP_WRITE Packet handle field index  [draft-ietf-secsh-filexfer-02](https://datatracker.ietf.org/doc/html/draft-ietf-secsh-filexfer-02#autoid-10)
+/// SFTP SSH_FXP_WRITE Packet handle field index  [draft-ietf-secsh-filexfer-02](https://datatracker.ietf.org/doc/html/draft-ietf-secsh-filexfer-02#section-6.4)
 // pub const SFTP_WRITE_HANDLE_INDEX: usize = 9;
 
+/// Considering the definition in [Section 7](https://datatracker.ietf.org/doc/html/draft-ietf-secsh-filexfer-02#section-7)
+/// for `SSH_FXP_READDIR`
+///
+/// (4 + 256) bytes for path, (4 + 0) bytes for empty long path and 72 bytes for the attributes ( 32/4*7 + 64/4 * 1 = 72)
+pub const MAX_NAME_ENTRY_SIZE: usize = 4 + 256 + 4 + 72;
+
 // TODO is utf8 enough, or does this need to be an opaque binstring?
+/// See [SSH_FXP_NAME in Responses from the Server to the Client](https://datatracker.ietf.org/doc/html/draft-ietf-secsh-filexfer-02#section-7)
 #[derive(Debug, SSHEncode, SSHDecode)]
 pub struct Filename<'a>(TextString<'a>);
 
@@ -46,14 +53,20 @@ impl<'a> From<&'a str> for Filename<'a> {
     }
 }
 
+// TODO standardize the encoding of filenames as str
 impl<'a> Filename<'a> {
+    ///
     pub fn as_str(&self) -> Result<&'a str, WireError> {
         core::str::from_utf8(self.0.0).map_err(|_| WireError::BadString)
     }
 }
 
+/// An opaque handle that is used by the server to identify an open
+/// file or folder.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, SSHEncode, SSHDecode)]
 pub struct FileHandle<'a>(pub BinString<'a>);
+
+// ========================== Initialization ===========================
 
 /// The reference implementation we are working on is 3, this is, https://datatracker.ietf.org/doc/html/draft-ietf-secsh-filexfer-02
 pub const SFTP_VERSION: u32 = 3;
@@ -74,67 +87,124 @@ pub struct InitVersionLowest {
     // TODO variable number of ExtPair
 }
 
+// ============================= Requests ==============================
+
+/// Used for `ssh_fxp_open` [response](https://datatracker.ietf.org/doc/html/draft-ietf-secsh-filexfer-02#section-6.3).
 #[derive(Debug, SSHEncode, SSHDecode)]
 pub struct Open<'a> {
+    /// The relative or absolute path of the file to be open
     pub filename: Filename<'a>,
+    /// File [permissions flags](https://datatracker.ietf.org/doc/html/draft-ietf-secsh-filexfer-02#section-6.3)
     pub pflags: u32,
+    /// Initial attributes for the file
     pub attrs: Attrs,
 }
 
+/// Used for `ssh_fxp_open` [response](https://datatracker.ietf.org/doc/html/draft-ietf-secsh-filexfer-02#section-6.7).
+#[derive(Debug, SSHEncode, SSHDecode)]
+pub struct OpenDir<'a> {
+    /// The relative or absolute path of the directory to be open
+    pub dirname: Filename<'a>,
+}
+
+/// Used for `ssh_fxp_close` [response](https://datatracker.ietf.org/doc/html/draft-ietf-secsh-filexfer-02#section-6.3).
 #[derive(Debug, SSHEncode, SSHDecode)]
 pub struct Close<'a> {
+    /// An opaque handle that is used by the server to identify an open
+    /// file or folder to be closed.
     pub handle: FileHandle<'a>,
 }
 
+/// Used for `ssh_fxp_read` [response](https://datatracker.ietf.org/doc/html/draft-ietf-secsh-filexfer-02#section-6.4).
 #[derive(Debug, SSHEncode, SSHDecode)]
 pub struct Read<'a> {
+    /// An opaque handle that is used by the server to identify an open
+    /// file or folder.
     pub handle: FileHandle<'a>,
+    /// The offset for the read operation
     pub offset: u64,
+    /// The number of bytes to be retrieved
     pub len: u32,
 }
 
+/// Used for `ssh_fxp_readdir` [response](https://datatracker.ietf.org/doc/html/draft-ietf-secsh-filexfer-02#section-6.7).
+#[derive(Debug, SSHEncode, SSHDecode)]
+pub struct ReadDir<'a> {
+    /// An opaque handle that is used by the server to identify an open
+    /// file or folder.
+    pub handle: FileHandle<'a>,
+}
+
+/// Used for `ssh_fxp_write` [response](https://datatracker.ietf.org/doc/html/draft-ietf-secsh-filexfer-02#section-6.4).
 #[derive(Debug, SSHEncode, SSHDecode)]
 pub struct Write<'a> {
+    /// An opaque handle that is used by the server to identify an open
+    /// file or folder.
     pub handle: FileHandle<'a>,
+    /// The offset for the read operation
     pub offset: u64,
+
     pub data: BinString<'a>,
 }
 
-// Responses
+// ============================= Responses =============================
 
+/// Used for `ssh_fxp_realpath` [response](https://datatracker.ietf.org/doc/html/draft-ietf-secsh-filexfer-02#section-6.11).
 #[derive(Debug, SSHEncode, SSHDecode)]
 pub struct PathInfo<'a> {
+    /// The path
     pub path: TextString<'a>,
 }
 
+/// Used for `ssh_fxp_status` [response](https://datatracker.ietf.org/doc/html/draft-ietf-secsh-filexfer-02#section-7).
 #[derive(Debug, SSHEncode, SSHDecode)]
 pub struct Status<'a> {
+    /// See [`StatusCode`] for possible codes
     pub code: StatusCode,
+    /// An extra message
     pub message: TextString<'a>,
+    /// A language tag as defined by [Tags for the Identification of Languages](https://datatracker.ietf.org/doc/html/rfc1766)
     pub lang: TextString<'a>,
 }
-
+/// Used for `ssh_fxp_handle` [response](https://datatracker.ietf.org/doc/html/draft-ietf-secsh-filexfer-02#section-7).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, SSHEncode, SSHDecode)]
 pub struct Handle<'a> {
+    /// An opaque handle that is used by the server to identify an open
+    /// file or folder.
     pub handle: FileHandle<'a>,
 }
 
+/// Used for `ssh_fxp_data` [responses](https://datatracker.ietf.org/doc/html/draft-ietf-secsh-filexfer-02#section-7).
 #[derive(Debug, SSHEncode, SSHDecode)]
 pub struct Data<'a> {
+    /// Handle for the file referred
     pub handle: FileHandle<'a>,
+    /// Offset in the data read
     pub offset: u64,
+    /// raw data
     pub data: BinString<'a>,
 }
 
+/// Struct to hold `SSH_FXP_NAME` response.
+/// See [SSH_FXP_NAME in Responses from the Server to the Client](https://datatracker.ietf.org/doc/html/draft-ietf-secsh-filexfer-02#section-7)
 #[derive(Debug, SSHEncode, SSHDecode)]
 pub struct NameEntry<'a> {
+    /// Is a file name being returned
     pub filename: Filename<'a>,
     /// longname is an undefined text line like "ls -l",
     /// SHOULD NOT be used.
     pub _longname: Filename<'a>,
+    /// Attributes for the file entry
+    ///
+    /// See [File Attributes](https://datatracker.ietf.org/doc/html/draft-ietf-secsh-filexfer-02#autoid-5)
+    /// for more information.
     pub attrs: Attrs,
 }
 
+// TODO Will a Vector be an issue for no_std?
+// Maybe we should migrate this to heapless::Vec and let the user decide
+// the number of elements via features flags?
+/// A collection of [`NameEntry`] used for [ssh_fxp_name responses](https://datatracker.ietf.org/doc/html/draft-ietf-secsh-filexfer-02#section-7).
 #[derive(Debug)]
 pub struct Name<'a>(pub Vec<NameEntry<'a>>);
 
@@ -179,9 +249,10 @@ pub struct ResponseAttributes {
 #[derive(Debug, SSHEncode, SSHDecode, Clone, Copy)]
 pub struct ReqId(pub u32);
 
+/// For more information see [Responses from the Server to the Client](https://datatracker.ietf.org/doc/html/draft-ietf-secsh-filexfer-02#section-7)
 #[derive(Debug, FromPrimitive, SSHEncode)]
 #[repr(u32)]
-#[allow(non_camel_case_types)]
+#[allow(non_camel_case_types, missing_docs)]
 pub enum StatusCode {
     #[sshwire(variant = "ssh_fx_ok")]
     SSH_FX_OK = 0,
@@ -222,9 +293,12 @@ pub struct ExtPair<'a> {
 }
 
 /// Files attributes to describe Files as SFTP v3 specification
+///
+/// See [File Attributes](https://datatracker.ietf.org/doc/html/draft-ietf-secsh-filexfer-02#autoid-5)
+/// for more information.
+#[allow(missing_docs)]
 #[derive(Debug, Default)]
 pub struct Attrs {
-    // flags: u32, defines used attributes
     pub size: Option<u64>,
     pub uid: Option<u32>,
     pub gid: Option<u32>,
@@ -235,6 +309,7 @@ pub struct Attrs {
     // TODO extensions
 }
 
+/// For more information see [File Attributes](https://datatracker.ietf.org/doc/html/draft-ietf-secsh-filexfer-02#autoid-5)
 #[repr(u32)]
 #[allow(non_camel_case_types)]
 pub enum AttrsFlags {
@@ -259,6 +334,10 @@ impl core::ops::BitAnd<AttrsFlags> for u32 {
 }
 
 impl Attrs {
+    /// Obtains the flags for the values stored in the [`Attrs`] struct.
+    ///
+    /// See [File Attributes](https://datatracker.ietf.org/doc/html/draft-ietf-secsh-filexfer-02#autoid-5)
+    /// for more information.
     pub fn flags(&self) -> u32 {
         let mut flags: u32 = 0;
         if self.size.is_some() {
@@ -273,7 +352,7 @@ impl Attrs {
         if self.atime.is_some() || self.mtime.is_some() {
             flags += AttrsFlags::SSH_FILEXFER_ATTR_ACMODTIME
         }
-        // TODO: Implement extensions
+        // TODO Implement extensions
         // if self.ext_count.is_some() {
         //     flags += AttrsFlags::SSH_FILEXFER_ATTR_EXTENDED
         // }
@@ -305,7 +384,7 @@ impl SSHEncode for Attrs {
         if let Some(value) = self.mtime.as_ref() {
             value.enc(s)?
         }
-        // TODO: Implement extensions
+        // TODO Implement extensions
         // if let Some(value) = self.ext_count.as_ref() { value.enc(s)? }
 
         Ok(())
@@ -333,7 +412,7 @@ impl<'de> SSHDecode<'de> for Attrs {
             attrs.atime = Some(u32::dec(s)?);
             attrs.mtime = Some(u32::dec(s)?);
         }
-        // TODO: Implement extensions
+        // TODO Implement extensions
         // if flags & AttrsFlags::SSH_FILEXFER_ATTR_EXTENDED != 0{
 
         Ok(attrs)
@@ -564,6 +643,8 @@ macro_rules! sftpmessages {
                 }
             }
 
+            // TODO Maybe change WireResult -> SftpResult and SSHSink to SftpSink?
+            // This way I have more internal details and can return a Error::bug() if required
             /// Encode a request.
             ///
             /// Used by a SFTP client. Does not include the length field.
@@ -571,7 +652,7 @@ macro_rules! sftpmessages {
                 if !self.sftp_num().is_request() {
                     return Err(WireError::PacketWrong)
                     // return Err(Error::bug())
-                    // TODO: I understand that it would be a bad call of encode_response and
+                    // I understand that it would be a bad call of encode_response and
                     // therefore a bug, bug Error::bug() is not compatible with WireResult
                 }
 
@@ -583,6 +664,8 @@ macro_rules! sftpmessages {
                 self.enc(s)
             }
 
+            // TODO Maybe change WireResult -> SftpResult and SSHSource to SftpSource?
+            // This way I have more internal details and can return a more appropriate error if required
             /// Decode a response.
             ///
             /// Used by a SFTP client. Does not include the length field.
@@ -597,7 +680,7 @@ macro_rules! sftpmessages {
                 if !num.is_response() {
                     return Err(WireError::PacketWrong)
                     // return error::SSHProto.fail();
-                    // TODO: Not an error in the SSHProtocol rather the SFTP Protocol.
+                    // Not an error in the SSHProtocol rather the SFTP Protocol.
                 }
 
                 let id = ReqId(u32::dec(s)?);
@@ -605,7 +688,7 @@ macro_rules! sftpmessages {
             }
 
 
-            /// Decode a request. Includes Initialization packets
+            /// Decode a request or initialization packets
             ///
             /// Used by a SFTP server. Does not include the length field.
             ///
@@ -636,6 +719,8 @@ macro_rules! sftpmessages {
                 }
             }
 
+            // TODO Maybe change WireResult -> SftpResult and SSHSink to SftpSink?
+            // This way I have more internal details and can return a Error::bug() if required
             /// Encode a response.
             ///
             /// Used by a SFTP server. Does not include the length field.
@@ -646,7 +731,7 @@ macro_rules! sftpmessages {
                 if !self.sftp_num().is_response() {
                     return Err(WireError::PacketWrong)
                     // return Err(Error::bug())
-                    // TODO: I understand that it would be a bad call of encode_response and
+                    // I understand that it would be a bad call of encode_response and
                     // therefore a bug, bug Error::bug() is not compatible with WireResult
                 }
 
@@ -697,6 +782,8 @@ sftpmessages! [
             (4, Close, Close<'a>, "ssh_fxp_close"),
             (5, Read, Read<'a>, "ssh_fxp_read"),
             (6, Write, Write<'a>, "ssh_fxp_write"),
+            (11, OpenDir, OpenDir<'a>, "ssh_fxp_opendir"),
+            (12, ReadDir, ReadDir<'a>, "ssh_fxp_readdir"),
             (16, PathInfo, PathInfo<'a>, "ssh_fxp_realpath"),
         },
 
@@ -705,6 +792,5 @@ sftpmessages! [
             (102, Handle, Handle<'a>, "ssh_fxp_handle"),
             (103, Data, Data<'a>, "ssh_fxp_data"),
             (104, Name, Name<'a>, "ssh_fxp_name"),
-
         },
 ];

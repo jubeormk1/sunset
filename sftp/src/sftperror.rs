@@ -1,27 +1,40 @@
-use core::convert::From;
+use crate::protocol::StatusCode;
 
-use log::warn;
+use crate::requestholder::RequestHolderError;
 use sunset::Error as SunsetError;
 use sunset::sshwire::WireError;
 
-use crate::{SftpOpResult, StatusCode, requestholder::RequestHolderError};
+use core::convert::From;
+use log::warn;
 
+// TODO Use it more broadly where reasonable
+/// Errors that are specific to this SFTP lib
 #[derive(Debug)]
 pub enum SftpError {
+    /// The SFTP server has not been initialised. No SFTP version has been
+    /// establish
     NotInitialized,
+    /// An `SSH_FXP_INIT` packet was received after the server was already
+    /// initialized
     AlreadyInitialized,
+    /// A packet could not be decoded as it was malformed
     MalformedPacket,
+    /// The server does not have an implementation for the current request.
+    /// Some possible causes are:
+    ///
+    /// - The request has not been handled by an [`crate::sftpserver::SftpServer`]
+    /// - Long request which its handling was not implemented
     NotSupported,
+    /// The connection has been closed by the client
+    ClientDisconnected,
     /// The [`crate::sftpserver::SftpServer`] failed doing an IO operation
     FileServerError(StatusCode),
-    // A RequestHolder instance throw an error. See [`crate::requestholder::RequestHolderError`]
-    /// A RequestHolder instance threw an error. See `RequestHolderError`
+    /// A RequestHolder instance throw an error. See [`crate::requestholder::RequestHolderError`]
     RequestHolderError(RequestHolderError),
     /// A variant containing a [`WireError`]
     WireError(WireError),
-    OperationError(StatusCode),
+    /// A variant containing a [`SunsetError`]
     SunsetError(SunsetError),
-    RequestHolderError(RequestHolderError),
 }
 
 impl From<WireError> for SftpError {
@@ -38,7 +51,7 @@ impl From<SunsetError> for SftpError {
 
 impl From<StatusCode> for SftpError {
     fn from(value: StatusCode) -> Self {
-        SftpError::OperationError(value)
+        SftpError::FileServerError(value)
     }
 }
 
@@ -78,13 +91,18 @@ impl From<SftpError> for SunsetError {
                 warn!("Casting error loosing information: {:?}", value);
                 SunsetError::PacketWrong {}
             }
-            SftpError::OperationError(_) => {
+            SftpError::RequestHolderError(_) => {
                 warn!("Casting error loosing information: {:?}", value);
-                SunsetError::PacketWrong {}
+                SunsetError::Bug
             }
-            SftpError::RequestHolderError(request_holder_error) => SunsetError::Bug,
+            SftpError::FileServerError(_) => {
+                warn!("Casting error loosing information: {:?}", value);
+                SunsetError::Bug
+            }
+            SftpError::ClientDisconnected => SunsetError::ChannelEOF,
         }
     }
 }
 
+/// result specific to this SFTP lib
 pub type SftpResult<T> = Result<T, SftpError>;
