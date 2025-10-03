@@ -1,19 +1,17 @@
-use crate::{proto, sftperror, sftpsource::SftpSource};
+use crate::{proto, sftpsource::SftpSource};
 
 #[allow(unused_imports)]
 use log::{debug, error, info, log, trace, warn};
 use sunset::sshwire::WireError;
 
 #[derive(Debug)]
-pub(crate) enum RequestHolderError {
+pub enum RequestHolderError {
     /// The slice to hold is too long
     NoRoom,
     /// The slice holder is keeping a slice already. Consideer cleaning
     Busy,
     /// The slice holder is empty
     Empty,
-    /// The instance has been invalidated
-    Invalid,
     /// There is not enough data in the slice we are trying to add. we need more data
     RanOut,
     /// WireError
@@ -50,8 +48,6 @@ pub(crate) type RequestHolderResult<T> = Result<T, RequestHolderError>;
 ///
 /// - `reset`: reset counters and flags to allow `try_hold` a new request
 ///
-/// - **OR** `invalidate`: return the reference to the slice provided in `new`
-/// and mark the structure as invalid. At this point it should be disposed
 #[derive(Debug)]
 pub struct RequestHolder<'a> {
     /// The buffer used to contain the data for the request
@@ -60,8 +56,6 @@ pub struct RequestHolder<'a> {
     buffer_fill_index: usize,
     /// Number of bytes appended in a previous `try_hold` or `try_append_for_valid_request` slice
     appended: usize,
-    /// Marks the structure as invalid
-    invalid: bool,
     /// Used to mark when the structure is holding data
     busy: bool,
 }
@@ -73,7 +67,6 @@ impl<'a> RequestHolder<'a> {
         RequestHolder {
             buffer: buffer,
             buffer_fill_index: 0,
-            invalid: false, // TODO: Remove if invalidate() is removed
             busy: false,
             appended: 0,
         }
@@ -91,14 +84,9 @@ impl<'a> RequestHolder<'a> {
     /// - Ok(usize): the number of bytes read from the slice
     ///
     /// - `Err(Busy)`: If there has been a call to `try_hold` without a call to `reset`
-    ///
-    /// - `Err(Invalid)`: If the structure has been marked as invalid previously
     pub fn try_hold(&mut self, slice: &[u8]) -> RequestHolderResult<usize> {
         if self.busy {
             return Err(RequestHolderError::Busy);
-        }
-        if self.invalid {
-            return Err(RequestHolderError::Invalid);
         }
 
         self.busy = true;
@@ -115,24 +103,8 @@ impl<'a> RequestHolder<'a> {
     /// Will not clear the previous data from the buffer.
     pub fn reset(&mut self) -> () {
         self.busy = false;
-        self.invalid = false;
         self.buffer_fill_index = 0;
         self.appended = 0;
-    }
-
-    // TODO: Remove it if it is not used
-    /// Invalidates the current instance and returns its original buffer. Does not erase previous data
-    pub fn invalidate(&mut self) -> RequestHolderResult<&[u8]> {
-        if !self.busy {
-            return Err(RequestHolderError::Empty);
-        }
-        if self.invalid {
-            return Err(RequestHolderError::Invalid);
-        }
-
-        self.invalid = true;
-        // self.buffer_fill_index = 0;
-        Ok(&self.buffer)
     }
 
     /// Using the content of the `RequestHolder` tries to find a valid
@@ -149,8 +121,6 @@ impl<'a> RequestHolder<'a> {
     ///
     /// - `Err(NoRoom)`: The internal buffer is full but there is not a full valid request in the buffer
     ///
-    /// - `Err(Invalid)`: If the structure has been marked as invalid previously
-    ///
     /// - `Err(Empty)`: If the structure has not been loaded with `try_hold`
     ///
     /// - `Err(Bug)`: An unexpected condition arises
@@ -166,11 +136,6 @@ impl<'a> RequestHolder<'a> {
             self.remaining_len(),
             slice.len()
         );
-
-        if self.invalid {
-            error!("Request Holder is invalid");
-            return Err(RequestHolderError::Invalid);
-        }
 
         if !self.busy {
             error!("Request Holder is not busy");
@@ -247,7 +212,6 @@ impl<'a> RequestHolder<'a> {
             self.buffer_fill_index - proto::SFTP_FIELD_LEN_LENGTH
                 + remaining_packet_len
         );
-        // TODO: Fix the mess with the logic and the indexes to address the slice. IT IS PANICKING
         if remaining_packet_len <= self.remaining_len() {
             // We have all the remaining packet bytes in the slice and fits in the buffer
 
@@ -283,15 +247,10 @@ impl<'a> RequestHolder<'a> {
                 return Err(RequestHolderError::RanOut);
             }
         }
-        Ok(())
     }
 
     /// Gets a reference to the slice that it is holding
     pub fn try_get_ref(&self) -> RequestHolderResult<&[u8]> {
-        if self.invalid {
-            return Err(RequestHolderError::Invalid);
-        }
-
         if self.busy {
             debug!(
                 "Returning reference to: {:?}",
@@ -307,6 +266,7 @@ impl<'a> RequestHolder<'a> {
         self.buffer_fill_index == self.buffer.len()
     }
 
+    #[allow(unused)]
     /// Returns true if it has a slice in its buffer
     pub fn is_busy(&self) -> bool {
         self.busy
@@ -326,8 +286,6 @@ impl<'a> RequestHolder<'a> {
     ///
     /// - `Ok(())`: the slice was appended
     ///
-    /// - `Err(Invalid)`: If the structure has been marked as invalid previously
-    ///
     /// - `Err(Empty)`: If the structure has not been loaded with `try_hold`
     ///
     /// - `Err(NoRoom)`: The internal buffer is full but there is not a full valid request in the buffer
@@ -338,10 +296,6 @@ impl<'a> RequestHolder<'a> {
         }
         if !self.busy {
             return Err(RequestHolderError::Empty);
-        }
-
-        if self.invalid {
-            return Err(RequestHolderError::Invalid);
         }
 
         let in_len = slice.len();
@@ -366,7 +320,6 @@ impl<'a> RequestHolder<'a> {
     /// Returns the number of bytes unused at the end of the buffer,
     /// this is, the remaining length
     fn remaining_len(&self) -> usize {
-        // self.buffer.len() - self.buffer_fill_index - 1 // TODO: Off by one?
         self.buffer.len() - self.buffer_fill_index
     }
 }
