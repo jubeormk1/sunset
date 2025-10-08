@@ -12,8 +12,10 @@ use crate::sftpsource::SftpSource;
 
 use sunset::Error as SunsetError;
 use sunset::sshwire::{SSHSource, WireError, WireResult};
+use sunset_async::ChanInOut;
 
-use core::{u32, usize};
+use core::u32;
+use embedded_io_async::{Read, Write};
 #[allow(unused_imports)]
 use log::{debug, error, info, log, trace, warn};
 
@@ -135,7 +137,6 @@ where
     pub async fn process(
         &mut self,
         buffer_in: &[u8],
-        // incomplete_request_holder: &mut RequestHolder<'_>,
         buffer_out: &mut [u8],
     ) -> SftpResult<usize> {
         let in_len = buffer_in.len();
@@ -477,6 +478,38 @@ where
         Ok(used_out_accumulated_index)
     }
 
+    /// WIP: A loop that will process all the request from stdio until
+    /// an EOF is received
+    pub async fn process_loop<'c>(
+        &mut self,
+        stdio: &mut ChanInOut<'c>,
+        buffer_in: &mut [u8],
+        buffer_out: &mut [u8],
+    ) -> SftpResult<()> {
+        loop {
+            let lr = stdio.read(buffer_in).await?;
+            trace!("SFTP <---- received: {:?}", &buffer_in[0..lr]);
+            if lr == 0 {
+                debug!("client disconnected");
+                return Err(SftpError::ClientDisconnected);
+            }
+
+            let lw = self.process(&buffer_in[0..lr], buffer_out).await?;
+            if lw > 0 {
+                let wo = stdio.write(&mut buffer_out[0..lw]).await?;
+                if wo != lw {
+                    error!("SFTP ----> Sent incomplete {} < {}", wo, lw);
+                    todo!(
+                        "Fix write incomplete condition: Repeat until \
+                    all is gone down the channel"
+                    );
+                }
+                trace!("SFTP ----> Sent: {:?}", &buffer_out[0..lw]);
+            }
+        }
+        Ok(())
+    }
+
     fn handle_general_request(
         file_server: &mut S,
         sink: &mut SftpSink<'_>,
@@ -537,9 +570,44 @@ where
                     }
                 }
             }
+            SftpPacket::OpenDir(req_id, open_dir) => {
+                match file_server.opendir(open_dir.dirname.as_str()?) {
+                    Ok(opaque_file_handle) => {
+                        let response = SftpPacket::Handle(
+                            req_id,
+                            proto::Handle {
+                                handle: opaque_file_handle.into_file_handle(),
+                            },
+                        );
+                        response.encode_response(sink)?;
+                        info!("Sending '{:?}'", response);
+                    }
+                    Err(status_code) => {
+                        error!("Open failed: {:?}", status_code);
+                        push_general_failure(req_id, "", sink)?;
+                    }
+                };
+            }
+            SftpPacket::ReadDir(req_id, read_dir) => {
+                // TODO Implement the mechanism you are going to use to
+                // handle the list of elements
+                match file_server.readdir(&T::try_from(&read_dir.handle)?) {
+                    Ok(_) => {
+                        todo!("Dance starts here");
+                    }
+                    Err(status_code) => {
+                        error!("Open failed: {:?}", status_code);
+                        push_unsupported(req_id, sink)?;
+                    }
+                };
+                error!("Unsupported Read Dir : {:?}", read_dir);
+                // return Err(SftpError::NotSupported);
+                // push_unsupported(ReqId(0), sink)?;
+            }
             _ => {
-                error!("Unsuported request type");
-                push_unsupported(ReqId(0), sink)?;
+                error!("Unsuported request type: {:?}", request);
+                return Err(SftpError::NotSupported);
+                // push_unsupported(ReqId(0), sink)?;
             }
         }
         Ok(())
