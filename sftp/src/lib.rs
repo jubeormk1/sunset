@@ -73,6 +73,8 @@ pub mod server {
     pub use crate::sftpserver::ReadReply;
     pub use crate::sftpserver::SftpOpResult;
     pub use crate::sftpserver::SftpServer;
+    pub use crate::sftpsink::SftpSink;
+    pub use sunset::sshwire::SSHEncode;
 }
 
 /// Handles and helpers used by the [`sftpserver::SftpServer`] trait implementer

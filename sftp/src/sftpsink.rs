@@ -35,7 +35,7 @@ impl<'g> SftpSink<'g> {
             warn!("SftpSink trying to terminate it before pushing data");
             return 0;
         } // size is 0
-        let used_size = (self.index - SFTP_FIELD_LEN_LENGTH) as u32;
+        let used_size = self.payload_len() as u32;
 
         used_size
             .to_be_bytes()
@@ -44,6 +44,11 @@ impl<'g> SftpSink<'g> {
             .for_each(|(i, v)| self.buffer[i] = *v);
 
         self.index
+    }
+
+    /// Auxiliar method to allow seen the len used by the sink
+    pub fn payload_len(&self) -> usize {
+        self.index - SFTP_FIELD_LEN_LENGTH
     }
 }
 

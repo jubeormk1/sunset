@@ -3,16 +3,18 @@ use crate::{
     demoopaquefilehandle::DemoOpaqueFileHandle,
 };
 
+use sunset::sshwire::SSHEncode;
 use sunset_sftp::handles::{OpaqueFileHandleManager, PathFinder};
 use sunset_sftp::protocol::{Attrs, Filename, Name, NameEntry, StatusCode};
-use sunset_sftp::server::{ReadReply, SftpOpResult, SftpServer};
+use sunset_sftp::server::{ReadReply, SftpOpResult, SftpServer, SftpSink};
 
 #[allow(unused_imports)]
 use log::{debug, error, info, log, trace, warn};
-use std::fs;
+use std::fs::DirEntry;
 use std::os::linux::fs::MetadataExt;
 use std::os::unix::fs::PermissionsExt;
 use std::time::SystemTime;
+use std::{fs, io};
 use std::{fs::File, os::unix::fs::FileExt, path::Path};
 
 #[derive(Debug)]
@@ -274,6 +276,7 @@ impl SftpServer<'_, DemoOpaqueFileHandle> for DemoSftpServer {
         // _reply: &mut DirReply<'_, '_>,
     ) -> SftpOpResult<()> {
         debug!("read dir for  {:?}", opaque_dir_handle);
+
         if let PrivatePathHandle::Directory(dir) = self
             .handles_manager
             .get_private_as_ref(opaque_dir_handle)
@@ -283,6 +286,7 @@ impl SftpServer<'_, DemoOpaqueFileHandle> for DemoSftpServer {
             debug!("opaque handle found in handles manager: {:?}", path_str);
             let dir_path = Path::new(&path_str);
             debug!("path: {:?}", dir_path);
+
             if dir_path.is_dir() {
                 debug!("SftpServer ReadDir operation path = {:?}", dir_path);
 
@@ -291,41 +295,14 @@ impl SftpServer<'_, DemoOpaqueFileHandle> for DemoSftpServer {
                     StatusCode::SSH_FX_PERMISSION_DENIED
                 })?;
 
-                debug!("got iterator = {:?}", dir_iterator);
+                let mut name_entry_collection =
+                    NameEntryCollection::new(dir_iterator);
 
-                for entry in dir_iterator {
-                    if let Ok(entry) = entry {
-                        // info!("{:?}", entry);
-                        if let Ok(metadata) = entry.metadata() {
-                            if metadata.accessed().is_ok()
-                                && metadata.modified().is_ok()
-                            {
-                                info!(
-                                    "{:?} : size = {:?}, uid = {:?}, gid = {:?}, \
-                                    permissions = {:?}, atime = {:?}, mtime = {:?}, \
-                                    ",
-                                    entry.path(),
-                                    metadata.len(),
-                                    metadata.st_uid(),
-                                    metadata.st_uid(),
-                                    metadata.permissions().mode(),
-                                    metadata
-                                        .accessed()
-                                        .unwrap()
-                                        .duration_since(SystemTime::UNIX_EPOCH)
-                                        .unwrap()
-                                        .as_secs(),
-                                    metadata
-                                        .modified()
-                                        .unwrap()
-                                        .duration_since(SystemTime::UNIX_EPOCH)
-                                        .unwrap()
-                                        .as_secs(),
-                                );
-                            }
-                        }
-                    }
+                while let Some(value) = name_entry_collection.next() {
+                    error!("Value: {:?}", value);
                 }
+
+                debug!("got iterator = {:?}", name_entry_collection);
             } else {
                 error!("the path is not a directory = {:?}", dir_path);
                 return Err(StatusCode::SSH_FX_NO_SUCH_FILE);
@@ -337,5 +314,115 @@ impl SftpServer<'_, DemoOpaqueFileHandle> for DemoSftpServer {
 
         error!("What is the return that we are looking for?");
         Err(StatusCode::SSH_FX_OP_UNSUPPORTED)
+    }
+}
+
+#[derive(Debug)]
+pub struct NameEntryCollection<'a> {
+    /// Number of elements
+    count: u32,
+    /// Computed length of all the encoded elements
+    encoded_length: u32,
+    /// The actual entries. As you can see these are DirEntry. This is a std choice
+    entries: Vec<DirEntry>,
+
+    iter_index: u32,
+
+    /// Phantom data used for the lifetime of the iterator
+    _iter_phantom: core::marker::PhantomData<&'a ()>,
+}
+
+// New
+impl<'a> NameEntryCollection<'a> {
+    pub fn new(dir_iterator: fs::ReadDir) -> Self {
+        let mut encoded_length = 0;
+        let entries: Vec<DirEntry> = dir_iterator
+            .filter_map(|entry_result| {
+                let entry = entry_result.ok()?;
+                let filename = entry.path().to_string_lossy().into_owned();
+                let attrs = Self::get_attrs_or_empty(entry.metadata());
+                let name_entry = NameEntry {
+                    filename: Filename::from(filename.as_str()),
+                    _longname: Filename::from(""),
+                    attrs,
+                };
+                let mut buffer = [0u8; 256];
+                let mut sftp_sink = SftpSink::new(&mut buffer);
+                name_entry.enc(&mut sftp_sink).ok()?;
+                //TODO remove this unchecked casting
+                encoded_length += sftp_sink.payload_len() as u32;
+                Some(entry)
+            })
+            .collect();
+
+        //TODO remove this unchecked casting
+        let count = entries.len() as u32;
+
+        info!(
+            "Processed {} entries, estimated serialized length: {}",
+            count, encoded_length
+        );
+
+        Self {
+            count,
+            encoded_length,
+            entries,
+            iter_index: 0,
+            _iter_phantom: std::marker::PhantomData,
+        }
+    }
+
+    fn get_attrs_or_empty(
+        maybe_metadata: Result<fs::Metadata, std::io::Error>,
+    ) -> Attrs {
+        maybe_metadata.map(Self::get_attrs).unwrap_or_default()
+    }
+
+    fn get_attrs(metadata: fs::Metadata) -> Attrs {
+        let time_to_u32 = |time_result: io::Result<SystemTime>| {
+            time_result
+                .ok()?
+                .duration_since(SystemTime::UNIX_EPOCH)
+                .ok()?
+                .as_secs()
+                .try_into()
+                .ok()
+        };
+
+        Attrs {
+            size: Some(metadata.len()),
+            uid: Some(metadata.st_uid()),
+            gid: Some(metadata.st_gid()),
+            permissions: Some(metadata.permissions().mode()),
+            atime: time_to_u32(metadata.accessed()),
+            mtime: time_to_u32(metadata.modified()),
+            ext_count: None,
+        }
+    }
+}
+
+// TODO Future trait WIP
+impl<'a> NameEntryCollection<'a> {
+    pub fn get_count(&self) -> u32 {
+        self.count
+    }
+
+    pub fn get_encoded_len(&self) -> u32 {
+        self.encoded_length
+    }
+}
+
+impl<'a> Iterator for NameEntryCollection<'a> {
+    // type Item = NameEntry<'a>;
+    type Item = u32;
+
+    // TODO use some sort of index. Proof of concept here
+    fn next(&mut self) -> Option<Self::Item> {
+        self.iter_index += 1;
+        if self.iter_index < 6 {
+            Some(self.iter_index)
+        } else {
+            None
+        }
     }
 }
