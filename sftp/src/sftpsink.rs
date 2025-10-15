@@ -50,6 +50,11 @@ impl<'g> SftpSink<'g> {
     pub fn payload_len(&self) -> usize {
         self.index - SFTP_FIELD_LEN_LENGTH
     }
+
+    /// Auxiliary method to allow an immutable reference to the encoded payload
+    pub fn payload_slice(&self) -> &[u8] {
+        &self.buffer[SFTP_FIELD_LEN_LENGTH..self.payload_len()]
+    }
 }
 
 impl<'g> SSHSink for SftpSink<'g> {
