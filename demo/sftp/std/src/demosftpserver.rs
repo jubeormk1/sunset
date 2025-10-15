@@ -6,7 +6,7 @@ use crate::{
 use sunset::sshwire::SSHEncode;
 use sunset_sftp::handles::{OpaqueFileHandleManager, PathFinder};
 use sunset_sftp::protocol::{Attrs, Filename, Name, NameEntry, StatusCode};
-use sunset_sftp::server::{ReadReply, SftpOpResult, SftpServer, SftpSink};
+use sunset_sftp::server::{DirReply, ReadReply, SftpOpResult, SftpServer, SftpSink};
 
 #[allow(unused_imports)]
 use log::{debug, error, info, log, trace, warn};
@@ -273,7 +273,7 @@ impl SftpServer<'_, DemoOpaqueFileHandle> for DemoSftpServer {
     fn readdir(
         &mut self,
         opaque_dir_handle: &DemoOpaqueFileHandle,
-        // _reply: &mut DirReply<'_, '_>,
+        _reply: &mut DirReply<'_, '_>,
     ) -> SftpOpResult<()> {
         debug!("read dir for  {:?}", opaque_dir_handle);
 
@@ -299,7 +299,9 @@ impl SftpServer<'_, DemoOpaqueFileHandle> for DemoSftpServer {
                     NameEntryCollection::new(dir_iterator);
 
                 while let Some(value) = name_entry_collection.next() {
-                    error!("Value: {:?}", value);
+                    info!("Value: {:?}", value);
+                    let data = [0u8; 6];
+                    _reply.reply(&data);
                 }
 
                 debug!("got iterator = {:?}", name_entry_collection);
@@ -346,7 +348,7 @@ impl<'a> NameEntryCollection<'a> {
                     _longname: Filename::from(""),
                     attrs,
                 };
-                let mut buffer = [0u8; 256];
+                let mut buffer = [0u8; 4 + 256 + 4 + 72]; // 4 + 256 bytes for path, 4 for empty long path and 72 bytes for the attributes ( 32/4*7 + 64/4 * 1 = 72)
                 let mut sftp_sink = SftpSink::new(&mut buffer);
                 name_entry.enc(&mut sftp_sink).ok()?;
                 //TODO remove this unchecked casting
@@ -415,6 +417,7 @@ impl<'a> NameEntryCollection<'a> {
 impl<'a> Iterator for NameEntryCollection<'a> {
     // type Item = NameEntry<'a>;
     type Item = u32;
+    // type Item = u32;
 
     // TODO use some sort of index. Proof of concept here
     fn next(&mut self) -> Option<Self::Item> {

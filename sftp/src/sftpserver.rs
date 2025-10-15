@@ -1,3 +1,5 @@
+use log::debug;
+
 use crate::{
     handles::OpaqueFileHandle,
     proto::{Attrs, Name, StatusCode},
@@ -72,7 +74,7 @@ where
     fn readdir(
         &mut self,
         opaque_dir_handle: &T,
-        // _reply: &mut DirReply<'_, '_>,
+        reply: &mut DirReply<'_, '_>,
     ) -> SftpOpResult<()> {
         log::error!(
             "SftpServer ReadDir operation not defined: handle = {:?}",
@@ -103,11 +105,18 @@ pub struct DirReply<'g, 'a> {
 }
 
 impl<'g, 'a> DirReply<'g, 'a> {
-    pub fn reply(self, _data: &[u8]) {}
+    pub fn fake() -> Self {
+        DirReply {
+            chan: ChanOut { _phantom_g: PhantomData, _phantom_a: PhantomData },
+        }
+    }
+    pub fn reply(&mut self, data: &[u8]) {
+        debug!("Got data: {:?}", data);
+    }
 }
 
 // TODO Implement correct Channel Out
 pub struct ChanOut<'g, 'a> {
-    _phantom_g: PhantomData<&'g ()>,
-    _phantom_a: PhantomData<&'a ()>,
+    _phantom_g: PhantomData<&'g ()>, // 'g look what these might be ChanIO lifetime
+    _phantom_a: PhantomData<&'a ()>, // a' Why the second lifetime if ChanIO only needs one
 }

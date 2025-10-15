@@ -46,7 +46,7 @@ impl<'g> SftpSink<'g> {
         self.index
     }
 
-    /// Auxiliar method to allow seen the len used by the sink
+    /// Auxiliary method to allow seen the len used by the encoded payload
     pub fn payload_len(&self) -> usize {
         self.index - SFTP_FIELD_LEN_LENGTH
     }

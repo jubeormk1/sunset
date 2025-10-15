@@ -5,6 +5,7 @@ use crate::proto::{
     SftpPacket, Status, StatusCode,
 };
 use crate::requestholder::{RequestHolder, RequestHolderError};
+use crate::server::DirReply;
 use crate::sftperror::SftpResult;
 use crate::sftpserver::SftpServer;
 use crate::sftpsink::SftpSink;
@@ -487,6 +488,7 @@ where
         buffer_out: &mut [u8],
     ) -> SftpResult<()> {
         loop {
+            // let channelspub struct ChanOut<'g>(ChanIO<'g>) = stdio.split();
             let lr = stdio.read(buffer_in).await?;
             trace!("SFTP <---- received: {:?}", &buffer_in[0..lr]);
             if lr == 0 {
@@ -591,7 +593,14 @@ where
             SftpPacket::ReadDir(req_id, read_dir) => {
                 // TODO Implement the mechanism you are going to use to
                 // handle the list of elements
-                match file_server.readdir(&T::try_from(&read_dir.handle)?) {
+
+                let closure = || {};
+
+                let mut dir_reply = DirReply::fake();
+
+                match file_server
+                    .readdir(&T::try_from(&read_dir.handle)?, &mut dir_reply)
+                {
                     Ok(_) => {
                         todo!("Dance starts here");
                     }
