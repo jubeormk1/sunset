@@ -594,9 +594,9 @@ where
                 // TODO Implement the mechanism you are going to use to
                 // handle the list of elements
 
-                let closure = || {};
+                let mut muting = 0;
 
-                let mut dir_reply = DirReply::fake();
+                let mut dir_reply = DirReply::mock(req_id, &mut muting);
 
                 match file_server
                     .readdir(&T::try_from(&read_dir.handle)?, &mut dir_reply)
@@ -609,6 +609,7 @@ where
                         push_unsupported(req_id, sink)?;
                     }
                 };
+                debug!("final muting: {:?}", muting);
                 error!("Unsupported Read Dir : {:?}", read_dir);
                 // return Err(SftpError::NotSupported);
                 // push_unsupported(ReqId(0), sink)?;
