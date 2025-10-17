@@ -52,8 +52,23 @@ impl<'g> SftpSink<'g> {
     }
 
     /// Auxiliary method to allow an immutable reference to the encoded payload
+    /// excluding the `u32` length field prepended to it
     pub fn payload_slice(&self) -> &[u8] {
         &self.buffer[SFTP_FIELD_LEN_LENGTH..self.payload_len()]
+    }
+
+    /// Auxiliary method to allow an immutable reference to the full used
+    /// data (includes the prepended length field)
+    ///
+    /// **Important:** Call this after [`SftpSink::finalize()`]
+    pub fn used_slice(&self) -> &[u8] {
+        &self.buffer[..self.payload_len()]
+    }
+
+    /// Reset the index and clean the first position
+    pub(crate) fn reset(&mut self) -> () {
+        self.index = 0;
+        self.buffer[self.index] = 0;
     }
 }
 

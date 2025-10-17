@@ -792,6 +792,5 @@ sftpmessages! [
             (102, Handle, Handle<'a>, "ssh_fxp_handle"),
             (103, Data, Data<'a>, "ssh_fxp_data"),
             (104, Name, Name<'a>, "ssh_fxp_name"),
-
         },
 ];
