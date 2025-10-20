@@ -688,7 +688,7 @@ macro_rules! sftpmessages {
             }
 
 
-            /// Decode a request. Includes Initialization packets
+            /// Decode a request or initialization packets
             ///
             /// Used by a SFTP server. Does not include the length field.
             ///

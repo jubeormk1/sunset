@@ -10,8 +10,6 @@ use crate::{
     demoopaquefilehandle::DemoOpaqueFileHandle, demosftpserver::DemoSftpServer,
 };
 
-use embedded_io_async::{Read, Write};
-
 use embassy_executor::Spawner;
 use embassy_net::{Stack, StackResources, StaticConfigV4};
 
@@ -154,7 +152,7 @@ impl DemoServer for StdDemo {
                 let mut incomplete_request_buffer = [0u8; 128]; // TODO Find a non arbitrary length
 
                 match {
-                    let mut stdio = serv.stdio(ch).await?;
+                    let stdio = serv.stdio(ch).await?;
                     let mut file_server = DemoSftpServer::new(
                         "./demo/sftp/std/testing/out/".to_string(),
                     );
@@ -164,8 +162,9 @@ impl DemoServer for StdDemo {
                             &mut file_server,
                             &mut incomplete_request_buffer,
                         );
+
                     sftp_handler
-                        .process_loop(&mut stdio, &mut buffer_in, &mut buffer_out)
+                        .process_loop(stdio, &mut buffer_in, &mut buffer_out)
                         .await?;
 
                     Ok::<_, Error>(())

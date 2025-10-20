@@ -39,7 +39,11 @@ enum FragmentedRequestState {
     /// and more bytes are needed
     ProcessingClippedRequest,
     /// A request, with a length over the incoming buffer capacity is being
-    /// processed
+    /// processed.
+    ///
+    /// E.g. a write request with size exceeding the
+    /// buffer size: Processing this request will require to be split
+    /// into multiple write actions
     ProcessingLongRequest,
 }
 

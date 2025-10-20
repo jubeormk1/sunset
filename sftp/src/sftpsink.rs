@@ -12,7 +12,7 @@ use log::{debug, error, info, log, trace, warn};
 /// len
 #[derive(Default)]
 pub struct SftpSink<'g> {
-    pub buffer: &'g mut [u8],
+    buffer: &'g mut [u8],
     index: usize,
 }
 
