@@ -149,7 +149,7 @@ impl DemoServer for StdDemo {
                 // TODO Do some research to find reasonable default buffer lengths
                 let mut buffer_in = [0u8; 512];
                 let mut buffer_out = [0u8; 384];
-                let mut incomplete_request_buffer = [0u8; 128]; // TODO Find a non arbitrary length
+                let mut incomplete_request_buffer = [0u8; 128];
 
                 match {
                     let stdio = serv.stdio(ch).await?;

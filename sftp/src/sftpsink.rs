@@ -66,7 +66,7 @@ impl<'g> SftpSink<'g> {
     }
 
     /// Reset the index and clean the first position
-    pub(crate) fn reset(&mut self) -> () {
+    pub fn reset(&mut self) -> () {
         self.index = 0;
         self.buffer[self.index] = 0;
     }
