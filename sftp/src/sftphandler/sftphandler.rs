@@ -1,3 +1,5 @@
+use super::PartialWriteRequestTracker;
+
 use crate::error::SftpError;
 use crate::handles::OpaqueFileHandle;
 use crate::proto::{
@@ -47,38 +49,38 @@ enum FragmentedRequestState {
     ProcessingLongRequest,
 }
 
-// TODO Generalize this to allow other request types
-/// Used to keep record of a long SFTP Write request that does not fit in
-/// receiving buffer and requires processing in batches
-#[derive(Debug)]
-pub struct PartialWriteRequestTracker<T: OpaqueFileHandle> {
-    req_id: ReqId,
-    opaque_handle: T,
-    remain_data_len: u32,
-    remain_data_offset: u64,
-}
+// // TODO Generalize this to allow other request types
+// /// Used to keep record of a long SFTP Write request that does not fit in
+// /// receiving buffer and requires processing in batches
+// #[derive(Debug)]
+// pub struct PartialWriteRequestTracker<T: OpaqueFileHandle> {
+//     req_id: ReqId,
+//     opaque_handle: T,
+//     remain_data_len: u32,
+//     remain_data_offset: u64,
+// }
 
-impl<T: OpaqueFileHandle> PartialWriteRequestTracker<T> {
-    /// Creates a new [`PartialWriteRequestTracker`]
-    pub fn new(
-        req_id: ReqId,
-        opaque_handle: T,
-        remain_data_len: u32,
-        remain_data_offset: u64,
-    ) -> WireResult<Self> {
-        Ok(PartialWriteRequestTracker {
-            req_id,
-            opaque_handle: opaque_handle,
-            remain_data_len,
-            remain_data_offset,
-        })
-    }
-    /// Returns the opaque file handle associated with the request
-    /// tracked
-    pub fn get_opaque_file_handle(&self) -> T {
-        self.opaque_handle.clone()
-    }
-}
+// impl<T: OpaqueFileHandle> PartialWriteRequestTracker<T> {
+//     /// Creates a new [`PartialWriteRequestTracker`]
+//     pub fn new(
+//         req_id: ReqId,
+//         opaque_handle: T,
+//         remain_data_len: u32,
+//         remain_data_offset: u64,
+//     ) -> WireResult<Self> {
+//         Ok(PartialWriteRequestTracker {
+//             req_id,
+//             opaque_handle: opaque_handle,
+//             remain_data_len,
+//             remain_data_offset,
+//         })
+//     }
+//     /// Returns the opaque file handle associated with the request
+//     /// tracked
+//     pub fn get_opaque_file_handle(&self) -> T {
+//         self.opaque_handle.clone()
+//     }
+// }
 
 /// Process the raw buffers in and out from a subsystem channel decoding
 /// request and encoding responses
@@ -299,7 +301,7 @@ where
 
                             let usable_data = source
                                 .remaining()
-                                .min(write_tracker.remain_data_len as usize);
+                                .min(write_tracker.get_remain_data_len() as usize);
 
                             let data_segment = // Fails!!
                                             source.dec_as_binstring(usable_data)?;
@@ -312,10 +314,10 @@ where
                                 SunsetError::Bug
                             })?;
                             let current_write_offset =
-                                write_tracker.remain_data_offset;
-                            write_tracker.remain_data_offset +=
-                                data_segment_len as u64;
-                            write_tracker.remain_data_len -= data_segment_len;
+                                write_tracker.get_remain_data_offset();
+                            write_tracker.update_remaining_after_partial_write(
+                                data_segment_len,
+                            );
 
                             debug!(
                                 "Processing successive chunks of a long write packet. \
@@ -324,7 +326,7 @@ where
                                 opaque_handle,
                                 current_write_offset,
                                 data_segment,
-                                write_tracker.remain_data_len
+                                write_tracker.get_remain_data_len()
                             );
 
                             match self.file_server.write(
@@ -333,12 +335,12 @@ where
                                 data_segment.as_ref(),
                             ) {
                                 Ok(_) => {
-                                    if write_tracker.remain_data_len > 0 {
+                                    if write_tracker.get_remain_data_len() > 0 {
                                         self.partial_write_request_tracker =
                                             Some(write_tracker);
                                     } else {
                                         push_ok(
-                                            write_tracker.req_id,
+                                            write_tracker.get_req_id(),
                                             &mut output_wrapper.get_mut_sink_ref(),
                                         )?;
                                         output_wrapper.send_buffer().await?;
@@ -349,7 +351,7 @@ where
                                 Err(e) => {
                                     error!("SFTP write thrown: {:?}", e);
                                     push_general_failure(
-                                        write_tracker.req_id,
+                                        write_tracker.get_req_id(),
                                         "error writing",
                                         &mut output_wrapper.get_mut_sink_ref(),
                                     )?;
