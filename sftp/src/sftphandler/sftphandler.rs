@@ -339,26 +339,26 @@ where
                                         self.partial_write_request_tracker =
                                             Some(write_tracker);
                                     } else {
-                                        push_status(
-                                            write_tracker.get_req_id(),
-                                            StatusCode::SSH_FX_OK,
-                                            "",
-                                            &mut output_wrapper.get_mut_sink_ref(),
-                                        )?;
-                                        output_wrapper.send_buffer().await?;
+                                        output_wrapper
+                                            .push_status(
+                                                write_tracker.get_req_id(),
+                                                StatusCode::SSH_FX_OK,
+                                                "",
+                                            )
+                                            .await?;
                                         info!("Finished multi part Write Request");
                                         self.state = SftpHandleState::Idle;
                                     }
                                 }
                                 Err(e) => {
                                     error!("SFTP write thrown: {:?}", e);
-                                    push_status(
-                                        write_tracker.get_req_id(),
-                                        StatusCode::SSH_FX_FAILURE,
-                                        "error writing",
-                                        &mut output_wrapper.get_mut_sink_ref(),
-                                    )?;
-                                    output_wrapper.send_buffer().await?;
+                                    output_wrapper
+                                        .push_status(
+                                            write_tracker.get_req_id(),
+                                            StatusCode::SSH_FX_FAILURE,
+                                            "error writing",
+                                        )
+                                        .await?;
                                     self.state = SftpHandleState::Idle;
                                 }
                             };
@@ -385,11 +385,7 @@ where
                                                 version: SFTP_VERSION,
                                             });
 
-                                        // info!("Sending '{:?}'", version);
-                                        version.encode_response(
-                                            output_wrapper.get_mut_sink_ref(),
-                                        )?;
-                                        output_wrapper.send_buffer().await?;
+                                        output_wrapper.push_packet(version).await?;
                                         self.state = SftpHandleState::Idle;
                                     }
                                     _ => {
@@ -469,13 +465,13 @@ where
                                             "Error decoding SFTP Packet: {:?}",
                                             e
                                         );
-                                        push_status(
-                                            ReqId(u32::MAX),
-                                            StatusCode::SSH_FX_OP_UNSUPPORTED,
-                                            "Error decoding SFTP Packet",
-                                            &mut output_wrapper.get_mut_sink_ref(),
-                                        )?;
-                                        output_wrapper.send_buffer().await?;
+                                        output_wrapper
+                                            .push_status(
+                                                ReqId(u32::MAX),
+                                                StatusCode::SSH_FX_OP_UNSUPPORTED,
+                                                "Error decoding SFTP Packet",
+                                            )
+                                            .await?;
                                     }
                                 },
                             };
@@ -543,9 +539,7 @@ where
                     &req_id, &response
                 );
 
-                response.encode_response(output_wrapper.get_mut_sink_ref())?;
-                // dbg!("PathInfo response encoded", &response);
-                output_wrapper.send_buffer().await?;
+                output_wrapper.push_packet(response).await?;
             }
             SftpPacket::Open(req_id, open) => {
                 match file_server.open(open.filename.as_str()?, &open.attrs) {
@@ -556,19 +550,13 @@ where
                                 handle: opaque_file_handle.into_file_handle(),
                             },
                         );
-                        response
-                            .encode_response(output_wrapper.get_mut_sink_ref())?;
-                        output_wrapper.send_buffer().await?;
+                        output_wrapper.push_packet(response).await?;
                     }
                     Err(status_code) => {
                         error!("Open failed: {:?}", status_code);
-                        push_status(
-                            req_id,
-                            StatusCode::SSH_FX_FAILURE,
-                            "",
-                            output_wrapper.get_mut_sink_ref(),
-                        )?;
-                        output_wrapper.send_buffer().await?;
+                        output_wrapper
+                            .push_status(req_id, StatusCode::SSH_FX_FAILURE, "")
+                            .await?;
                     }
                 };
             }
@@ -581,22 +569,19 @@ where
                     write.data.as_ref(),
                 ) {
                     Ok(_) => {
-                        push_status(
-                            req_id,
-                            StatusCode::SSH_FX_OK,
-                            "",
-                            &mut output_wrapper.get_mut_sink_ref(),
-                        )?;
-                        output_wrapper.send_buffer().await?;
+                        output_wrapper
+                            .push_status(req_id, StatusCode::SSH_FX_OK, "")
+                            .await?;
                     }
                     Err(e) => {
                         error!("SFTP write thrown: {:?}", e);
-                        push_status(
-                            req_id,
-                            StatusCode::SSH_FX_FAILURE,
-                            "error writing",
-                            output_wrapper.get_mut_sink_ref(),
-                        )?;
+                        output_wrapper
+                            .push_status(
+                                req_id,
+                                StatusCode::SSH_FX_FAILURE,
+                                "error writing",
+                            )
+                            .await?;
                         output_wrapper.send_buffer().await?;
                     }
                 };
@@ -604,23 +589,19 @@ where
             SftpPacket::Close(req_id, close) => {
                 match file_server.close(&T::try_from(&close.handle)?) {
                     Ok(_) => {
-                        push_status(
-                            req_id,
-                            StatusCode::SSH_FX_OK,
-                            "",
-                            &mut output_wrapper.get_mut_sink_ref(),
-                        )?;
-                        output_wrapper.send_buffer().await?;
+                        output_wrapper
+                            .push_status(req_id, StatusCode::SSH_FX_OK, "")
+                            .await?;
                     }
                     Err(e) => {
                         error!("SFTP Close thrown: {:?}", e);
-                        push_status(
-                            req_id,
-                            StatusCode::SSH_FX_FAILURE,
-                            "Could not Close the handle",
-                            output_wrapper.get_mut_sink_ref(),
-                        )?;
-                        output_wrapper.send_buffer().await?;
+                        output_wrapper
+                            .push_status(
+                                req_id,
+                                StatusCode::SSH_FX_FAILURE,
+                                "Could not Close the handle",
+                            )
+                            .await?;
                     }
                 }
             }
@@ -633,19 +614,13 @@ where
                                 handle: opaque_file_handle.into_file_handle(),
                             },
                         );
-                        response
-                            .encode_response(output_wrapper.get_mut_sink_ref())?;
-                        output_wrapper.send_buffer().await?;
+                        output_wrapper.push_packet(response).await?;
                     }
                     Err(status_code) => {
                         error!("Open failed: {:?}", status_code);
-                        push_status(
-                            req_id,
-                            StatusCode::SSH_FX_FAILURE,
-                            "",
-                            output_wrapper.get_mut_sink_ref(),
-                        )?;
-                        output_wrapper.send_buffer().await?;
+                        output_wrapper
+                            .push_status(req_id, StatusCode::SSH_FX_FAILURE, "")
+                            .await?;
                     }
                 };
             }
@@ -665,13 +640,13 @@ where
                     }
                     Err(status_code) => {
                         error!("Open failed: {:?}", status_code);
-                        push_status(
-                            req_id,
-                            StatusCode::SSH_FX_OP_UNSUPPORTED,
-                            "Error Reading Directory",
-                            output_wrapper.get_mut_sink_ref(),
-                        )?;
-                        output_wrapper.send_buffer().await?;
+                        output_wrapper
+                            .push_status(
+                                req_id,
+                                StatusCode::SSH_FX_OP_UNSUPPORTED,
+                                "Error Reading Directory",
+                            )
+                            .await?;
                     }
                 };
                 debug!("final muting: {:?}", muting);
@@ -738,13 +713,13 @@ where
                     }
                     Err(e) => {
                         error!("SFTP write thrown: {:?}", e);
-                        push_status(
-                            req_id,
-                            StatusCode::SSH_FX_FAILURE,
-                            "error writing ",
-                            output_wrapper.get_mut_sink_ref(),
-                        )?;
-                        output_wrapper.send_buffer().await?;
+                        output_wrapper
+                            .push_status(
+                                req_id,
+                                StatusCode::SSH_FX_FAILURE,
+                                "error writing ",
+                            )
+                            .await?;
                         return Err(SftpError::FileServerError(e));
                     }
                 };
@@ -761,34 +736,24 @@ where
     }
 }
 
-struct OutputWrapper<'a, 'g> {
+/// Wrapper structure to handle SFTP output operations
+///
+/// It wraps an SftpSink and a ChanOut to facilitate sending SFTP packets
+/// even when they require multiple iterations
+pub struct OutputWrapper<'a, 'g> {
     sink: SftpSink<'a>,
     channel_out: ChanOut<'g>,
 }
 
 impl<'a, 'g> OutputWrapper<'a, 'g> {
+    /// Creates a new OutputWrapper
+    ///
+    /// This structure wraps an SftpSink and a ChanOut to facilitate
+    /// sending SFTP packets even when they require multiple steps
     pub fn new(buffer: &'a mut [u8], channel_out: ChanOut<'g>) -> Self {
         let sink = SftpSink::new(buffer);
         OutputWrapper { channel_out, sink }
     }
-
-    pub fn reset(&mut self) {
-        self.sink.reset();
-    }
-
-    pub fn get_mut_sink_ref(&mut self) -> &mut SftpSink<'a> {
-        &mut self.sink
-    }
-
-    // TODO Are we using this?
-    pub fn encode<T>(&mut self, data: &T) -> SftpResult<()>
-    where
-        T: SSHEncode,
-    {
-        data.enc(&mut self.sink)?;
-        Ok(())
-    }
-    //
 
     /// Finalizes (Prepends the packet length) and send the data in the
     /// buffer by the subsystem channel out
@@ -818,22 +783,30 @@ impl<'a, 'g> OutputWrapper<'a, 'g> {
         Ok(written)
     }
 
-    pub fn finalize(&mut self) -> usize {
-        self.sink.finalize()
+    /// Push a status message into the channel out
+    pub async fn push_status(
+        &mut self,
+        req_id: ReqId,
+        status: StatusCode,
+        msg: &'static str,
+    ) -> Result<(), WireError> {
+        let response = SftpPacket::Status(
+            req_id,
+            Status { code: status, message: msg.into(), lang: "en-US".into() },
+        );
+        trace!("Pushing a status message: {:?}", response);
+        response.encode_response(&mut self.sink)?;
+        self.send_buffer().await?;
+        Ok(())
     }
-}
 
-fn push_status(
-    req_id: ReqId,
-    status: StatusCode,
-    msg: &'static str,
-    sink: &mut SftpSink<'_>,
-) -> Result<(), WireError> {
-    let response = SftpPacket::Status(
-        req_id,
-        Status { code: status, message: msg.into(), lang: "en-US".into() },
-    );
-    trace!("Pushing a status message: {:?}", response);
-    response.encode_response(sink)?;
-    Ok(())
+    /// Push an SFTP Packet into the channel out
+    pub async fn push_packet(
+        &mut self,
+        version: SftpPacket<'_>,
+    ) -> Result<(), WireError> {
+        version.encode_response(&mut self.sink)?;
+        self.send_buffer().await?;
+        Ok(())
+    }
 }
