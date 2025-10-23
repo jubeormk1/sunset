@@ -4,21 +4,21 @@ use crate::error::SftpError;
 use crate::handles::OpaqueFileHandle;
 use crate::proto::{
     self, InitVersionLowest, ReqId, SFTP_MINIMUM_PACKET_LEN, SFTP_VERSION, SftpNum,
-    SftpPacket, Status, StatusCode,
+    SftpPacket, StatusCode,
 };
 use crate::requestholder::{RequestHolder, RequestHolderError};
 use crate::server::DirReply;
 use crate::sftperror::SftpResult;
+use crate::sftphandler::sftpoutputchannelwrapper::SftpOutputChannelWrapper;
 use crate::sftpserver::SftpServer;
-use crate::sftpsink::SftpSink;
 use crate::sftpsource::SftpSource;
 
 use sunset::Error as SunsetError;
-use sunset::sshwire::{SSHEncode, SSHSource, WireError, WireResult};
-use sunset_async::{ChanInOut, ChanOut};
+use sunset::sshwire::{SSHSource, WireError};
+use sunset_async::ChanInOut;
 
 use core::u32;
-use embedded_io_async::{Read, Write};
+use embedded_io_async::Read;
 #[allow(unused_imports)]
 use log::{debug, error, info, log, trace, warn};
 
@@ -146,7 +146,7 @@ where
     async fn process<'g>(
         &mut self,
         buffer_in: &[u8],
-        output_wrapper: &mut OutputWrapper<'a, 'g>,
+        output_wrapper: &mut SftpOutputChannelWrapper<'a, 'g>,
     ) -> SftpResult<()> {
         let in_len = buffer_in.len();
         let mut buffer_in_lower_index_bracket = 0;
@@ -502,7 +502,8 @@ where
     ) -> SftpResult<()> {
         let (mut chan_in, chan_out) = stdio.split();
 
-        let mut out_wrapper = OutputWrapper::new(buffer_out, chan_out);
+        let mut chan_out_wrapper =
+            SftpOutputChannelWrapper::new(buffer_out, chan_out);
         loop {
             let lr = chan_in.read(buffer_in).await?;
             trace!("SFTP <---- received: {:?}", &buffer_in[0..lr]);
@@ -511,14 +512,13 @@ where
                 return Err(SftpError::ClientDisconnected);
             }
 
-            self.process(&buffer_in[0..lr], &mut out_wrapper).await?;
+            self.process(&buffer_in[0..lr], &mut chan_out_wrapper).await?;
         }
-        // Ok(())
     }
 
     async fn handle_general_request<'g>(
         file_server: &mut S,
-        output_wrapper: &mut OutputWrapper<'a, 'g>,
+        output_wrapper: &mut SftpOutputChannelWrapper<'a, 'g>,
         request: SftpPacket<'_>,
     ) -> Result<(), SftpError>
     where
@@ -670,7 +670,7 @@ where
     ///
     async fn handle_ran_out<'g>(
         file_server: &mut S,
-        output_wrapper: &mut OutputWrapper<'a, 'g>,
+        output_wrapper: &mut SftpOutputChannelWrapper<'a, 'g>,
         source: &mut SftpSource<'_>,
     ) -> SftpResult<PartialWriteRequestTracker<T>> {
         let packet_type = source.peak_packet_type()?;
@@ -733,80 +733,5 @@ where
             }
         };
         // Ok(())
-    }
-}
-
-/// Wrapper structure to handle SFTP output operations
-///
-/// It wraps an SftpSink and a ChanOut to facilitate sending SFTP packets
-/// even when they require multiple iterations
-pub struct OutputWrapper<'a, 'g> {
-    sink: SftpSink<'a>,
-    channel_out: ChanOut<'g>,
-}
-
-impl<'a, 'g> OutputWrapper<'a, 'g> {
-    /// Creates a new OutputWrapper
-    ///
-    /// This structure wraps an SftpSink and a ChanOut to facilitate
-    /// sending SFTP packets even when they require multiple steps
-    pub fn new(buffer: &'a mut [u8], channel_out: ChanOut<'g>) -> Self {
-        let sink = SftpSink::new(buffer);
-        OutputWrapper { channel_out, sink }
-    }
-
-    /// Finalizes (Prepends the packet length) and send the data in the
-    /// buffer by the subsystem channel out
-    pub async fn send_buffer(&mut self) -> SftpResult<usize> {
-        if self.sink.payload_len() == 0 {
-            debug!("No data to send in the SFTP sink");
-            return Ok(0);
-        }
-        self.sink.finalize();
-        let buffer = self.sink.used_slice();
-        info!("Sending buffer: '{:?}'", buffer);
-        let written = self.channel_out.write(buffer).await?;
-        self.sink.reset();
-        Ok(written)
-    }
-
-    /// Send the data in the buffer by the subsystem channel out without
-    ///  prepending the packet length to it.
-    ///     
-    /// This is useful when an SFTP packet header has already being sent
-    /// or when the data requires an special treatment
-    pub async fn send_payload(&mut self) -> SftpResult<usize> {
-        let payload = self.sink.payload_slice();
-        info!("Sending payload: '{:?}'", payload);
-        let written = self.channel_out.write(payload).await?;
-        self.sink.reset();
-        Ok(written)
-    }
-
-    /// Push a status message into the channel out
-    pub async fn push_status(
-        &mut self,
-        req_id: ReqId,
-        status: StatusCode,
-        msg: &'static str,
-    ) -> Result<(), WireError> {
-        let response = SftpPacket::Status(
-            req_id,
-            Status { code: status, message: msg.into(), lang: "en-US".into() },
-        );
-        trace!("Pushing a status message: {:?}", response);
-        response.encode_response(&mut self.sink)?;
-        self.send_buffer().await?;
-        Ok(())
-    }
-
-    /// Push an SFTP Packet into the channel out
-    pub async fn push_packet(
-        &mut self,
-        version: SftpPacket<'_>,
-    ) -> Result<(), WireError> {
-        version.encode_response(&mut self.sink)?;
-        self.send_buffer().await?;
-        Ok(())
     }
 }
