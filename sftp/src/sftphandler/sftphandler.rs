@@ -339,8 +339,10 @@ where
                                         self.partial_write_request_tracker =
                                             Some(write_tracker);
                                     } else {
-                                        push_ok(
+                                        push_status(
                                             write_tracker.get_req_id(),
+                                            StatusCode::SSH_FX_OK,
+                                            "",
                                             &mut output_wrapper.get_mut_sink_ref(),
                                         )?;
                                         output_wrapper.send_buffer().await?;
@@ -350,8 +352,9 @@ where
                                 }
                                 Err(e) => {
                                     error!("SFTP write thrown: {:?}", e);
-                                    push_general_failure(
+                                    push_status(
                                         write_tracker.get_req_id(),
+                                        StatusCode::SSH_FX_FAILURE,
                                         "error writing",
                                         &mut output_wrapper.get_mut_sink_ref(),
                                     )?;
@@ -466,8 +469,10 @@ where
                                             "Error decoding SFTP Packet: {:?}",
                                             e
                                         );
-                                        push_unsupported(
+                                        push_status(
                                             ReqId(u32::MAX),
+                                            StatusCode::SSH_FX_OP_UNSUPPORTED,
+                                            "Error decoding SFTP Packet",
                                             &mut output_wrapper.get_mut_sink_ref(),
                                         )?;
                                         output_wrapper.send_buffer().await?;
@@ -557,8 +562,9 @@ where
                     }
                     Err(status_code) => {
                         error!("Open failed: {:?}", status_code);
-                        push_general_failure(
+                        push_status(
                             req_id,
+                            StatusCode::SSH_FX_FAILURE,
                             "",
                             output_wrapper.get_mut_sink_ref(),
                         )?;
@@ -575,13 +581,19 @@ where
                     write.data.as_ref(),
                 ) {
                     Ok(_) => {
-                        push_ok(req_id, output_wrapper.get_mut_sink_ref())?;
+                        push_status(
+                            req_id,
+                            StatusCode::SSH_FX_OK,
+                            "",
+                            &mut output_wrapper.get_mut_sink_ref(),
+                        )?;
                         output_wrapper.send_buffer().await?;
                     }
                     Err(e) => {
                         error!("SFTP write thrown: {:?}", e);
-                        push_general_failure(
+                        push_status(
                             req_id,
+                            StatusCode::SSH_FX_FAILURE,
                             "error writing",
                             output_wrapper.get_mut_sink_ref(),
                         )?;
@@ -592,14 +604,20 @@ where
             SftpPacket::Close(req_id, close) => {
                 match file_server.close(&T::try_from(&close.handle)?) {
                     Ok(_) => {
-                        push_ok(req_id, output_wrapper.get_mut_sink_ref())?;
+                        push_status(
+                            req_id,
+                            StatusCode::SSH_FX_OK,
+                            "",
+                            &mut output_wrapper.get_mut_sink_ref(),
+                        )?;
                         output_wrapper.send_buffer().await?;
                     }
                     Err(e) => {
                         error!("SFTP Close thrown: {:?}", e);
-                        push_general_failure(
+                        push_status(
                             req_id,
-                            "",
+                            StatusCode::SSH_FX_FAILURE,
+                            "Could not Close the handle",
                             output_wrapper.get_mut_sink_ref(),
                         )?;
                         output_wrapper.send_buffer().await?;
@@ -621,8 +639,9 @@ where
                     }
                     Err(status_code) => {
                         error!("Open failed: {:?}", status_code);
-                        push_general_failure(
+                        push_status(
                             req_id,
+                            StatusCode::SSH_FX_FAILURE,
                             "",
                             output_wrapper.get_mut_sink_ref(),
                         )?;
@@ -646,7 +665,12 @@ where
                     }
                     Err(status_code) => {
                         error!("Open failed: {:?}", status_code);
-                        push_unsupported(req_id, output_wrapper.get_mut_sink_ref())?;
+                        push_status(
+                            req_id,
+                            StatusCode::SSH_FX_OP_UNSUPPORTED,
+                            "Error Reading Directory",
+                            output_wrapper.get_mut_sink_ref(),
+                        )?;
                         output_wrapper.send_buffer().await?;
                     }
                 };
@@ -714,8 +738,9 @@ where
                     }
                     Err(e) => {
                         error!("SFTP write thrown: {:?}", e);
-                        push_general_failure(
+                        push_status(
                             req_id,
+                            StatusCode::SSH_FX_FAILURE,
                             "error writing ",
                             output_wrapper.get_mut_sink_ref(),
                         )?;
@@ -798,54 +823,17 @@ impl<'a, 'g> OutputWrapper<'a, 'g> {
     }
 }
 
-#[inline]
-fn push_ok(req_id: ReqId, sink: &mut SftpSink<'_>) -> Result<(), WireError> {
-    let response = SftpPacket::Status(
-        req_id,
-        Status {
-            code: StatusCode::SSH_FX_OK,
-            message: "".into(),
-            lang: "en-US".into(),
-        },
-    );
-    trace!("Pushing an OK status message: {:?}", response);
-    response.encode_response(sink)?;
-    Ok(())
-}
-
-#[inline]
-fn push_unsupported(
+fn push_status(
     req_id: ReqId,
-    sink: &mut SftpSink<'_>,
-) -> Result<(), WireError> {
-    let response = SftpPacket::Status(
-        req_id,
-        Status {
-            code: StatusCode::SSH_FX_OP_UNSUPPORTED,
-            message: "Not implemented".into(),
-            lang: "en-US".into(),
-        },
-    );
-    debug!("Pushing a unsupported status message: {:?}", response);
-    response.encode_response(sink)?;
-    Ok(())
-}
-
-#[inline]
-fn push_general_failure(
-    req_id: ReqId,
+    status: StatusCode,
     msg: &'static str,
     sink: &mut SftpSink<'_>,
 ) -> Result<(), WireError> {
     let response = SftpPacket::Status(
         req_id,
-        Status {
-            code: StatusCode::SSH_FX_FAILURE,
-            message: msg.into(),
-            lang: "en-US".into(),
-        },
+        Status { code: status, message: msg.into(), lang: "en-US".into() },
     );
-    debug!("Pushing a general failure status message: {:?}", response);
+    trace!("Pushing a status message: {:?}", response);
     response.encode_response(sink)?;
     Ok(())
 }
