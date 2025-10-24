@@ -60,7 +60,7 @@ impl<'a, 'g> SftpOutputChannelWrapper<'a, 'g> {
     }
 
     /// Push a status message into the channel out
-    pub async fn push_status(
+    pub async fn send_status(
         &mut self,
         req_id: ReqId,
         status: StatusCode,
@@ -71,17 +71,23 @@ impl<'a, 'g> SftpOutputChannelWrapper<'a, 'g> {
             Status { code: status, message: msg.into(), lang: "en-US".into() },
         );
         trace!("Pushing a status message: {:?}", response);
-        response.encode_response(&mut self.sink)?;
-        self.send_buffer().await?;
+        self.send_packet(response);
+
         Ok(())
     }
 
     /// Push an SFTP Packet into the channel out
-    pub async fn push_packet(
+    pub async fn send_packet(
         &mut self,
-        version: SftpPacket<'_>,
+        packet: SftpPacket<'_>,
     ) -> Result<(), WireError> {
-        version.encode_response(&mut self.sink)?;
+        packet.encode_response(&mut self.sink)?;
+        self.send_buffer().await?;
+        Ok(())
+    }
+
+    pub async fn push(&mut self, item: &impl SSHEncode) -> Result<(), WireError> {
+        item.enc(&mut self.sink)?;
         self.send_buffer().await?;
         Ok(())
     }
