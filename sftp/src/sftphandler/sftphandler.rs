@@ -7,20 +7,17 @@ use crate::proto::{
     SftpPacket, StatusCode,
 };
 use crate::requestholder::{RequestHolder, RequestHolderError};
-use crate::server::DirReply;
 use crate::sftperror::SftpResult;
 use crate::sftphandler::sftpoutputchannelhandler::{
     SftpOutputPipe, SftpOutputProducer,
 };
-use crate::sftphandler::sftpoutputchannelwrapper::SftpOutputChannelWrapper;
 use crate::sftpserver::SftpServer;
 use crate::sftpsource::SftpSource;
 
 use embassy_futures::select::select;
-use embassy_sync::blocking_mutex::raw::RawMutex;
 use sunset::Error as SunsetError;
 use sunset::sshwire::{SSHSource, WireError};
-use sunset_async::{ChanInOut, SunsetRawMutex};
+use sunset_async::ChanInOut;
 
 use core::u32;
 use embedded_io_async::Read;
