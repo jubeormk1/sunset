@@ -8,7 +8,7 @@ use embassy_sync::pipe::{Pipe, Reader as PipeReader, Writer as PipeWriter};
 use embedded_io_async::Write;
 use sunset_async::SunsetRawMutex;
 
-use log::{debug, trace};
+use log::{debug, error, trace};
 
 //// This is the beginning of a new idea:
 /// I want to pass ref of an item where different methods in the sftphandler can
@@ -99,10 +99,12 @@ impl<'a, const N: usize> SftpOutputConsumer<'a, N> {
         let mut buf = [0u8; N];
         loop {
             let rl = self.reader.read(&mut buf).await;
-            debug!("Output Consumer Reader task: Reads {} bytes", rl);
-            debug!("Output Consumer Reader task: Bytes {:?}", &buf[..rl]);
+            debug!("Output Consumer: Reads {} bytes", rl);
+            debug!("Output Consumer: Bytes {:?}", &buf[..rl]);
             if rl > 0 {
                 self.ssh_chan_out.write_all(&buf[..rl]).await?;
+            } else {
+                error!("Output Consumer: Empty array received");
             }
         }
     }

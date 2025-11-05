@@ -491,9 +491,9 @@ where
         let (mut output_consumer, output_producer) =
             sftp_output_pipe.split(chan_out);
 
-        let future_output_consumer = output_consumer.receive_task();
+        let output_consumer_loop = output_consumer.receive_task();
 
-        let future_processing = async {
+        let processing_loop = async {
             loop {
                 let lr = chan_in.read(buffer_in).await?;
                 trace!("SFTP <---- received: {:?}", &buffer_in[0..lr]);
@@ -506,7 +506,7 @@ where
             }
             SftpResult::Ok(())
         };
-        match select(future_processing, future_output_consumer).await {
+        match select(processing_loop, output_consumer_loop).await {
             embassy_futures::select::Either::First(r) => {
                 debug!("Processing returned: {:?}", r);
                 r

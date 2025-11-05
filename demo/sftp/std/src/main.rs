@@ -89,7 +89,7 @@ impl DemoServer for StdDemo {
     async fn run(&self, serv: &SSHServer<'_>, mut common: DemoCommon) -> Result<()> {
         let chan_pipe = Channel::<SunsetRawMutex, ChanHandle, 1>::new();
 
-        let prog_loop_inner = async {
+        let ssh_loop_inner = async {
             loop {
                 let mut ph = ProgressHolder::new();
                 let ev = serv.progress(&mut ph).await?;
@@ -118,7 +118,7 @@ impl DemoServer for StdDemo {
                                 warn!(
                                 "request for subsystem '{}' not implemented: fail",
                                 a.command()?
-                            );
+                                );
                                 a.fail()?;
                             }
                         }
@@ -130,9 +130,9 @@ impl DemoServer for StdDemo {
             Ok::<_, Error>(())
         };
 
-        let prog_loop = async {
+        let ssh_loop = async {
             info!("prog_loop started");
-            if let Err(e) = prog_loop_inner.await {
+            if let Err(e) = ssh_loop_inner.await {
                 warn!("Prog Loop Exited: {e:?}");
                 return Err(e);
             }
@@ -178,7 +178,7 @@ impl DemoServer for StdDemo {
             Ok::<_, Error>(())
         };
 
-        let selected = select(prog_loop, sftp_loop).await;
+        let selected = select(ssh_loop, sftp_loop).await;
         match selected {
             embassy_futures::select::Either::First(res) => {
                 warn!("prog_loop finished: {:?}", res);
