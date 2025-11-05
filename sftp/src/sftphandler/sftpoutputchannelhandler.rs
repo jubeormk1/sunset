@@ -1,4 +1,4 @@
-use crate::error::{SftpError, SftpResult};
+use crate::error::SftpResult;
 use crate::proto::{ReqId, SftpPacket, Status, StatusCode};
 use crate::server::SftpSink;
 
@@ -17,7 +17,6 @@ pub struct SftpOutputPipe<const N: usize> {
     pipe: Pipe<SunsetRawMutex, N>,
     counter_send: CounterMutex,
     counter_recv: CounterMutex,
-    splitted: bool,
 }
 
 /// M: SunsetSunsetRawMutex
@@ -34,7 +33,6 @@ impl<const N: usize> SftpOutputPipe<N> {
             pipe: Pipe::new(),
             counter_send: Mutex::<SunsetRawMutex, usize>::new(0),
             counter_recv: Mutex::<SunsetRawMutex, usize>::new(0),
-            splitted: false,
         }
     }
 
@@ -52,16 +50,12 @@ impl<const N: usize> SftpOutputPipe<N> {
     pub fn split<'a>(
         &'a mut self,
         ssh_chan_out: ChanOut<'a>,
-    ) -> SftpResult<(SftpOutputConsumer<'a, N>, SftpOutputProducer<'a, N>)> {
-        if self.splitted {
-            return Err(SftpError::AlreadyInitialized);
-        }
-        self.splitted = true;
+    ) -> (SftpOutputConsumer<'a, N>, SftpOutputProducer<'a, N>) {
         let (reader, writer) = self.pipe.split();
-        Ok((
+        (
             SftpOutputConsumer { reader, ssh_chan_out, counter: &self.counter_recv },
             SftpOutputProducer { writer, counter: &self.counter_send },
-        ))
+        )
     }
 }
 
@@ -80,14 +74,14 @@ impl<'a, const N: usize> SftpOutputConsumer<'a, N> {
         let mut buf = [0u8; N];
         loop {
             let rl = self.reader.read(&mut buf).await;
-            let mut _total = 0;
+            let mut total = 0;
             {
                 let mut lock = self.counter.lock().await;
                 *lock += rl;
-                _total = *lock;
+                total = *lock;
             }
 
-            debug!("Output Consumer: ---> Reads {rl} bytes. Total {_total}");
+            debug!("Output Consumer: Reads {rl} bytes. Total {total}");
             if rl > 0 {
                 self.ssh_chan_out.write_all(&buf[..rl]).await?;
                 debug!("Output Consumer: Written {:?} bytes ", &buf[..rl].len());
@@ -112,6 +106,16 @@ impl<'a, const N: usize> SftpOutputProducer<'a, N> {
     ///
     /// Use this when you are sending chunks of data after a valid header
     pub async fn send_data(&self, buf: &[u8]) -> SftpResult<()> {
+        Self::send_buffer(&self.writer, &buf, &self.counter).await;
+        Ok(())
+    }
+
+    /// Sends the data encoded in the provided [`SftpSink`] without including
+    /// the size.
+    ///
+    /// Use this when you are sending chunks of data after a valid header
+    pub async fn send_payload(&self, sftp_sink: &SftpSink<'_>) -> SftpResult<()> {
+        let buf = sftp_sink.payload_slice();
         Self::send_buffer(&self.writer, &buf, &self.counter).await;
         Ok(())
     }
@@ -149,14 +153,14 @@ impl<'a, const N: usize> SftpOutputProducer<'a, N> {
         buf: &[u8],
         counter: &CounterMutex,
     ) {
-        let mut _total = 0;
+        let mut total = 0;
         {
             let mut lock = counter.lock().await;
             *lock += buf.len();
-            _total = *lock;
+            total = *lock;
         }
 
-        debug!("Output Producer: <--- Sends {:?} bytes. Total {_total}", buf.len());
+        debug!("Output Producer: Sends {:?} bytes. Total {total}", buf.len());
         trace!("Output Producer: Sending buffer {:?}", buf);
 
         // writer.write_all(buf); // ??? error[E0596]: cannot borrow `*writer` as mutable, as it is behind a `&` reference

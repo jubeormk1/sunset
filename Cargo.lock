@@ -2833,7 +2833,7 @@ dependencies = [
  "embassy-futures",
  "embassy-net",
  "embassy-net-tuntap",
- "embassy-sync 0.7.0",
+ "embassy-sync 0.7.2",
  "embassy-time",
  "embedded-io-async",
  "env_logger",
@@ -2891,6 +2891,8 @@ dependencies = [
 name = "sunset-sftp"
 version = "0.1.1"
 dependencies = [
+ "embassy-futures",
+ "embassy-sync 0.7.2",
  "embedded-io-async",
  "log",
  "num_enum 0.7.4",

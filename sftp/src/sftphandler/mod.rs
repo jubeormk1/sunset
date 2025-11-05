@@ -1,7 +1,7 @@
 mod partialwriterequesttracker;
 mod sftphandler;
-mod sftpoutputchannelwrapper;
+mod sftpoutputchannelhandler;
 
 pub use partialwriterequesttracker::PartialWriteRequestTracker;
 pub use sftphandler::SftpHandler;
-pub use sftpoutputchannelwrapper::SftpOutputChannelWrapper;
+pub use sftpoutputchannelhandler::SftpOutputProducer;
