@@ -77,7 +77,7 @@ where
 
     /// Reads the list of items in a directory
     #[allow(unused_variables)]
-    fn readdir<const N: usize>(
+    async fn readdir<const N: usize>(
         &mut self,
         opaque_dir_handle: &T,
         reply: &DirReply<'_, N>,
@@ -88,6 +88,15 @@ where
         );
         Err(StatusCode::SSH_FX_OP_UNSUPPORTED)
     }
+
+    // async fn readdir<const N: usize>(
+    //     &mut self,
+    //     opaque_dir_handle: &T,
+    //     reply: &DirReply<'_, N>,
+    // ) -> SftpOpResult<()> {
+    //     log::error!("SftpServer ReadDir operation not defined");
+    //     Err(StatusCode::SSH_FX_OP_UNSUPPORTED)
+    // }
 
     /// Provides the real path of the directory specified
     fn realpath(&mut self, dir: &str) -> SftpOpResult<Name<'_>> {
@@ -130,6 +139,18 @@ pub trait DirEntriesResponseHelpers {
     {
         Err(StatusCode::SSH_FX_OP_UNSUPPORTED)
     }
+
+    // /// Must call the callback passing an [`SftpSink::payload_slice()`] as a parameter
+    // /// were a [`NameEntry`] has been encoded.
+    // ///
+    // ///
+    // #[allow(unused_variables)]
+    // fn encoded_iter<F>(
+    //     &self,
+    //     writer: F,
+    // ) -> impl Iterator<Item = SftpOpResult<&[u8]>> {
+    //     Err(StatusCode::SSH_FX_OP_UNSUPPORTED)
+    // }
 }
 
 // TODO Define this
@@ -193,17 +214,15 @@ impl<'g, const N: usize> DirReply<'g, N> {
         DirReply { req_id, chan_out }
     }
 
-    // TODO this will need to do async execution
-    /// mocks sending  an item via a stdio
-    pub fn send_item(&self, data: &[u8]) {
+    /// Sends an item to the client
+    pub async fn send_item(&self, data: &[u8]) {
         // *self.muting += 1;
-        debug!("Sending item: {:?}", data);
-        // self.chan_out.send_data(data).await;
+        debug!("Sending item: len = {:?}, content = {:?}", data.len(), data);
+        self.chan_out.send_data(data).await;
     }
 
-    // TODO this will need to do async execution
-    /// Must be call it first. Make this enforceable
-    pub fn send_header(
+    /// Sends the header to the client. TODO Make this enforceable
+    pub async fn send_header(
         &self,
         get_count: u32,
         get_encoded_len: u32,
@@ -219,8 +238,13 @@ impl<'g, const N: usize> DirReply<'g, N> {
         104u8.enc(&mut sink)?;
         self.req_id.enc(&mut sink)?;
         get_count.enc(&mut sink)?;
-        debug!("Sending header: {:?}", sink.payload_slice());
-        // self.chan_out.send_data(buf);
+        let payload = sink.payload_slice();
+        debug!(
+            "Sending header:  len = {:?}, content = {:?}",
+            payload.len(),
+            payload
+        );
+        self.chan_out.send_data(sink.payload_slice()).await?;
         Ok(())
     }
 }

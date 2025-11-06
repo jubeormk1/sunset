@@ -631,6 +631,7 @@ where
 
                 match file_server
                     .readdir(&T::try_from(&read_dir.handle)?, &mut dir_reply)
+                    .await
                 {
                     Ok(_) => {}
                     Err(status) => {
@@ -643,8 +644,6 @@ where
                         );
                     }
                 };
-                error!("Unsupported Read Dir : {:?}", read_dir);
-                return Err(SftpError::NotSupported);
             }
             _ => {
                 error!("Unsupported request type: {:?}", request);
