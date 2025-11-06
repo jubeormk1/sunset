@@ -166,6 +166,7 @@ pub struct Status<'a> {
     /// A language tag as defined by [Tags for the Identification of Languages](https://datatracker.ietf.org/doc/html/rfc1766)
     pub lang: TextString<'a>,
 }
+
 /// Used for `ssh_fxp_handle` [response](https://datatracker.ietf.org/doc/html/draft-ietf-secsh-filexfer-02#section-7).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, SSHEncode, SSHDecode)]
 pub struct Handle<'a> {
@@ -201,44 +202,65 @@ pub struct NameEntry<'a> {
     pub attrs: Attrs,
 }
 
+/// This is the encoded length for the Name Sftp Response.
+///
+/// This considers the Packet type (1), the Request Id (4) and
+/// count of [`NameEntry`] that will follow
+///
+/// It excludes the length of [`NameEntry`] explicitly
+///
+/// It is defined a single source of truth for what is the length for the
+/// encoded [`SftpPacket::Name`] variant
+///
+/// See [Responses from the Server to the Client](https://datatracker.ietf.org/doc/html/draft-ietf-secsh-filexfer-02#section-7)
+pub(crate) const ENCODED_BASE_NAME_SFTP_PACKET_LENGTH: u32 = 9;
+
 // TODO Will a Vector be an issue for no_std?
 // Maybe we should migrate this to heapless::Vec and let the user decide
 // the number of elements via features flags?
+/// This is the first part of the `SSH_FXP_NAME` response. It includes
+/// only the count of [`NameEntry`] items that follow this Name
+///
+/// After encoding or decoding [`Name`], [`NameEntry`] must be encoded or
+/// decoded `count` times
 /// A collection of [`NameEntry`] used for [ssh_fxp_name responses](https://datatracker.ietf.org/doc/html/draft-ietf-secsh-filexfer-02#section-7).
 #[derive(Debug)]
-pub struct Name<'a>(pub Vec<NameEntry<'a>>);
+// pub struct Name<'a>(pub Vec<NameEntry<'a>>);
+pub struct Name {
+    /// Number of [`NameEntry`] items that follow this Name
+    pub count: u32,
+}
 
-impl<'a: 'de, 'de> SSHDecode<'de> for Name<'a>
-where
-    'de: 'a,
-{
+impl<'de> SSHDecode<'de> for Name {
     fn dec<S>(s: &mut S) -> WireResult<Self>
     where
         S: SSHSource<'de>,
     {
-        let count = u32::dec(s)? as usize;
+        let count = u32::dec(s)? as u32;
 
-        let mut names = Vec::with_capacity(count);
+        // let mut names = Vec::with_capacity(count);
 
-        for _ in 0..count {
-            names.push(NameEntry::dec(s)?);
-        }
+        // for _ in 0..count {
+        //     names.push(NameEntry::dec(s)?);
+        // }
 
-        Ok(Name(names))
+        Ok(Name { count })
     }
 }
 
-impl<'a> SSHEncode for Name<'a> {
+impl SSHEncode for Name {
     fn enc(&self, s: &mut dyn SSHSink) -> WireResult<()> {
-        (self.0.len() as u32).enc(s)?;
+        self.count.enc(s)
+        // (self.0.len() as u32).enc(s)?;
 
-        for element in self.0.iter() {
-            element.enc(s)?;
-        }
-        Ok(())
+        // for element in self.0.iter() {
+        //     element.enc(s)?;
+        // }
+        // Ok(())
     }
 }
 
+// TODO: Is this really necessary?
 #[derive(Debug, SSHEncode, SSHDecode)]
 pub struct ResponseAttributes {
     pub attrs: Attrs,
@@ -250,29 +272,30 @@ pub struct ResponseAttributes {
 pub struct ReqId(pub u32);
 
 /// For more information see [Responses from the Server to the Client](https://datatracker.ietf.org/doc/html/draft-ietf-secsh-filexfer-02#section-7)
-#[derive(Debug, FromPrimitive, SSHEncode)]
+/// TODO: Reference! This is packed as u32 since that is the field data type in specs
+#[derive(Debug, FromPrimitive)]
 #[repr(u32)]
 #[allow(non_camel_case_types, missing_docs)]
 pub enum StatusCode {
-    #[sshwire(variant = "ssh_fx_ok")]
+    // #[sshwire(variant = "ssh_fx_ok")]
     SSH_FX_OK = 0,
-    #[sshwire(variant = "ssh_fx_eof")]
+    // #[sshwire(variant = "ssh_fx_eof")]
     SSH_FX_EOF = 1,
-    #[sshwire(variant = "ssh_fx_no_such_file")]
+    // #[sshwire(variant = "ssh_fx_no_such_file")]
     SSH_FX_NO_SUCH_FILE = 2,
-    #[sshwire(variant = "ssh_fx_permission_denied")]
+    // #[sshwire(variant = "ssh_fx_permission_denied")]
     SSH_FX_PERMISSION_DENIED = 3,
-    #[sshwire(variant = "ssh_fx_failure")]
+    // #[sshwire(variant = "ssh_fx_failure")]
     SSH_FX_FAILURE = 4,
-    #[sshwire(variant = "ssh_fx_bad_message")]
+    // #[sshwire(variant = "ssh_fx_bad_message")]
     SSH_FX_BAD_MESSAGE = 5,
-    #[sshwire(variant = "ssh_fx_no_connection")]
+    // #[sshwire(variant = "ssh_fx_no_connection")]
     SSH_FX_NO_CONNECTION = 6,
-    #[sshwire(variant = "ssh_fx_connection_lost")]
+    // #[sshwire(variant = "ssh_fx_connection_lost")]
     SSH_FX_CONNECTION_LOST = 7,
-    #[sshwire(variant = "ssh_fx_unsupported")]
+    // #[sshwire(variant = "ssh_fx_unsupported")]
     SSH_FX_OP_UNSUPPORTED = 8,
-    #[sshwire(unknown)]
+    // #[sshwire(unknown)]
     #[num_enum(catch_all)]
     Other(u32),
 }
@@ -286,6 +309,34 @@ impl<'de> SSHDecode<'de> for StatusCode {
     }
 }
 
+// TODO: Implement an automatic from implementation for u32 to Status code
+// This is prone to errors if we update StatusCode enum
+impl From<&StatusCode> for u32 {
+    fn from(value: &StatusCode) -> Self {
+        match value {
+            StatusCode::SSH_FX_OK => 0,
+            StatusCode::SSH_FX_EOF => 1,
+            StatusCode::SSH_FX_NO_SUCH_FILE => 2,
+            StatusCode::SSH_FX_PERMISSION_DENIED => 3,
+            StatusCode::SSH_FX_FAILURE => 4,
+            StatusCode::SSH_FX_BAD_MESSAGE => 5,
+            StatusCode::SSH_FX_NO_CONNECTION => 6,
+            StatusCode::SSH_FX_CONNECTION_LOST => 7,
+            StatusCode::SSH_FX_OP_UNSUPPORTED => 8,
+            StatusCode::Other(value) => *value,
+        }
+    }
+}
+// TODO: Implement an SSHEncode attribute for enums to encode them in a given numeric format
+impl SSHEncode for StatusCode {
+    fn enc(&self, s: &mut dyn SSHSink) -> WireResult<()> {
+        let numeric_value: u32 = self.into();
+        numeric_value.enc(s)
+    }
+}
+
+// TODO: Implement extensions. Low in priority
+/// Provided to provide a mechanism to implement extensions
 #[derive(Debug, SSHEncode, SSHDecode)]
 pub struct ExtPair<'a> {
     pub name: &'a str,
@@ -791,6 +842,42 @@ sftpmessages! [
             (101, Status, Status<'a>, "ssh_fxp_status"),
             (102, Handle, Handle<'a>, "ssh_fxp_handle"),
             (103, Data, Data<'a>, "ssh_fxp_data"),
-            (104, Name, Name<'a>, "ssh_fxp_name"),
+            (104, Name, Name, "ssh_fxp_name"),
         },
 ];
+
+#[cfg(test)]
+mod proto_tests {
+    use super::*;
+    use crate::server::SftpSink;
+
+    #[test]
+    fn test_status_encoding() {
+        let mut buf = [0u8; 256];
+        let mut sink = SftpSink::new(&mut buf);
+        let status_packet = SftpPacket::Status(
+            ReqId(16),
+            Status {
+                code: StatusCode::SSH_FX_EOF,
+                message: "A".into(),
+                lang: "en-US".into(),
+            },
+        );
+
+        let expected_status_packet_slice: [u8; 27] = [
+            0, 0, 0, 23,  //                            Packet len
+            101, //                                     Packet type
+            0, 0, 0, 16, //                             ReqId
+            0, 0, 0, 1, //                              Status code: SSH_FX_EOF
+            0, 0, 0, 1,  //                             string message length
+            65, //                                      string message content
+            0, 0, 0, 5, //                              string lang length
+            101, 110, 45, 85, 83, //                    string lang content
+        ];
+
+        let _ = status_packet.encode_response(&mut sink);
+        sink.finalize();
+
+        assert_eq!(&expected_status_packet_slice, sink.used_slice());
+    }
+}
