@@ -233,7 +233,7 @@ impl<'g, const N: usize> DirReply<'g, N> {
         let mut sink = SftpSink::new(&mut s);
 
         get_encoded_len.enc(&mut sink)?;
-        104u8.enc(&mut sink)?;
+        104u8.enc(&mut sink)?; // TODO Remove hack
         self.req_id.enc(&mut sink)?;
         get_count.enc(&mut sink)?;
         let payload = sink.payload_slice();

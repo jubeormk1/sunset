@@ -208,20 +208,20 @@ async fn main(spawner: Spawner) {
         .filter_level(log::LevelFilter::Info)
         .filter_module(
             "sunset_demo_sftp_std::demosftpserver",
-            log::LevelFilter::Debug,
+            log::LevelFilter::Info,
         )
-        .filter_module("sunset_sftp::sftphandler", log::LevelFilter::Debug)
+        .filter_module("sunset_sftp::sftphandler", log::LevelFilter::Info)
         .filter_module(
             "sunset_sftp::sftphandler::sftpoutputchannelhandler",
-            log::LevelFilter::Info,
+            log::LevelFilter::Debug,
         )
         .filter_module("sunset_sftp::sftpsink", log::LevelFilter::Info)
         .filter_module("sunset_sftp::sftpsource", log::LevelFilter::Info)
-        .filter_module("sunset_sftp::sftpserver", log::LevelFilter::Debug)
+        .filter_module("sunset_sftp::sftpserver", log::LevelFilter::Info)
         .filter_module("sunset::runner", log::LevelFilter::Info)
         .filter_module("sunset::encrypt", log::LevelFilter::Info)
         .filter_module("sunset::conn", log::LevelFilter::Info)
-        .filter_module("sunset::kex", log::LevelFilter::Trace)
+        .filter_module("sunset::kex", log::LevelFilter::Info)
         .filter_module("sunset_async::async_sunset", log::LevelFilter::Info)
         .filter_module("async_io", log::LevelFilter::Info)
         .filter_module("polling", log::LevelFilter::Info)

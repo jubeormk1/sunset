@@ -151,25 +151,23 @@ where
         buffer_in: &[u8],
         output_producer: &SftpOutputProducer<'_, BUFFER_OUT_SIZE>,
     ) -> SftpResult<()> {
-        let in_len = buffer_in.len();
-        let mut buffer_in_lower_index_bracket = 0;
+        let mut buf = buffer_in;
+        // let in_len = buffer_in.len();
+        // let mut buffer_in_lower_index_bracket = 0;
 
-        trace!("Received {:} bytes to process", in_len);
+        trace!("Received {:} bytes to process", buf.len());
 
         if !matches!(self.state, SftpHandleState::Fragmented(_))
-            & in_len.lt(&SFTP_MINIMUM_PACKET_LEN)
+            & buf.len().lt(&SFTP_MINIMUM_PACKET_LEN)
         {
             return Err(WireError::PacketWrong.into());
         }
 
-        while buffer_in_lower_index_bracket < in_len {
+        while buf.len() > 0 {
             debug!(
-                "Buffer In Lower index bracket: {}",
-                buffer_in_lower_index_bracket
-            );
-            debug!(
-                "<=======================[ SFTP Process State: {:?} ]=======================>",
-                self.state
+                "<=======================[ SFTP Process State: {:?} ]=======================> Buffer remaining: {}",
+                self.state,
+                buf.len()
             );
 
             match &self.state {
@@ -178,9 +176,7 @@ where
                     FragmentedRequestState::ProcessingClippedRequest => {
                         if let Err(e) = self
                             .incomplete_request_holder
-                            .try_append_for_valid_request(
-                                &buffer_in[buffer_in_lower_index_bracket..],
-                            )
+                            .try_append_for_valid_request(&buf)
                         {
                             match e {
                                 RequestHolderError::RanOut => {
@@ -188,8 +184,9 @@ where
                                         "There was not enough bytes in the buffer_in. \
                                                 We will continue adding bytes"
                                     );
-                                    buffer_in_lower_index_bracket +=
-                                        self.incomplete_request_holder.appended();
+                                    buf = &buf[self
+                                        .incomplete_request_holder
+                                        .appended()..];
                                     continue;
                                 }
                                 RequestHolderError::WireError(WireError::RanOut) => {
@@ -197,8 +194,9 @@ where
                                         "WIRE ERROR: There was not enough bytes in the buffer_in. \
                                                 We will continue adding bytes"
                                     );
-                                    buffer_in_lower_index_bracket +=
-                                        self.incomplete_request_holder.appended();
+                                    buf = &buf[self
+                                        .incomplete_request_holder
+                                        .appended()..];
                                     continue;
                                 }
                                 RequestHolderError::NoRoom => {
@@ -223,7 +221,7 @@ where
                         }
 
                         let used = self.incomplete_request_holder.appended();
-                        buffer_in_lower_index_bracket += used;
+                        buf = &buf[used..];
 
                         let mut source = SftpSource::new(
                             &self.incomplete_request_holder.try_get_ref()?,
@@ -279,9 +277,7 @@ where
                         }
                     }
                     FragmentedRequestState::ProcessingLongRequest => {
-                        let mut source = SftpSource::new(
-                            &buffer_in[buffer_in_lower_index_bracket..],
-                        );
+                        let mut source = SftpSource::new(&buf);
                         trace!("Source content: {:?}", source);
 
                         let mut write_tracker = if let Some(wt) =
@@ -356,15 +352,12 @@ where
                                 self.state = SftpHandleState::Idle;
                             }
                         };
-                        buffer_in_lower_index_bracket = in_len - source.remaining();
+                        buf = &buf[buf.len() - source.remaining()..];
                     }
                 },
 
                 SftpHandleState::Initializing => {
-                    let (source, sftp_packet) = create_sftp_source_and_packet(
-                        buffer_in,
-                        buffer_in_lower_index_bracket,
-                    );
+                    let (source, sftp_packet) = create_sftp_source_and_packet(buf);
                     match sftp_packet {
                         Ok(request) => {
                             match request {
@@ -394,12 +387,15 @@ where
                             return Err(SftpError::MalformedPacket);
                         }
                     }
-                    buffer_in_lower_index_bracket = in_len - source.remaining();
+                    buf = &buf[buf.len() - source.remaining()..];
                 }
                 SftpHandleState::Idle => {
-                    let (mut source, sftp_packet) = create_sftp_source_and_packet(
-                        buffer_in,
-                        buffer_in_lower_index_bracket,
+                    let (mut source, sftp_packet) =
+                        create_sftp_source_and_packet(buf);
+                    debug!(
+                        "Source remaining = {} <= Buf len = {}",
+                        source.remaining(),
+                        buf.len()
                     );
                     match sftp_packet {
                         Ok(request) => {
@@ -427,8 +423,7 @@ where
                                     Ok(holder) => {
                                         self.partial_write_request_tracker =
                                             Some(holder);
-                                        self.state =
-                                                            SftpHandleState::Fragmented(FragmentedRequestState::ProcessingLongRequest)
+                                        self.state = SftpHandleState::Fragmented(FragmentedRequestState::ProcessingLongRequest);
                                     }
                                     Err(e) => {
                                         error!("Error handle_ran_out");
@@ -437,13 +432,11 @@ where
                                                 WireError::RanOut,
                                             ) => {
                                                 debug!("");
-                                                let read = self.incomplete_request_holder
-                                                                .try_hold(
-                                                                &buffer_in
-                                                                    [buffer_in_lower_index_bracket..],
-                                                            )?;
-                                                buffer_in_lower_index_bracket +=
-                                                    read;
+                                                let read = self
+                                                    .incomplete_request_holder
+                                                    .try_hold(&buf)?;
+                                                buf = &buf[read..];
+
                                                 self.state = SftpHandleState::Fragmented(FragmentedRequestState::ProcessingClippedRequest);
                                                 continue;
                                             }
@@ -466,11 +459,16 @@ where
                             }
                         },
                     };
-                    buffer_in_lower_index_bracket = in_len - source.remaining();
+                    buf = &buf[buf.len() - source.remaining()..];
+                    debug!("New buffer len {} bytes ", buf.len())
                 }
             }
+            debug!("Process checking buf len {:?}", buf.len());
+            if buf.len() == 0 {
+                break;
+            }
         }
-
+        debug!("Exiting process with Ok(())");
         Ok(())
     }
 
@@ -494,6 +492,8 @@ where
         let processing_loop = async {
             loop {
                 let lr = chan_in.read(buffer_in).await?;
+
+                debug!("SFTP <---- received: {:?} bytes", lr);
                 trace!("SFTP <---- received: {:?}", &buffer_in[0..lr]);
                 if lr == 0 {
                     debug!("client disconnected");
@@ -627,13 +627,15 @@ where
                 // TODO Implement the mechanism you are going to use to
                 // handle the list of elements
 
-                let mut dir_reply = DirReply::new(req_id, output_producer);
+                let dir_reply = DirReply::new(req_id, output_producer);
 
                 match file_server
-                    .readdir(&T::try_from(&read_dir.handle)?, &mut dir_reply)
+                    .readdir(&T::try_from(&read_dir.handle)?, &dir_reply)
                     .await
                 {
-                    Ok(_) => {}
+                    Ok(_) => {
+                        // dir_reply should have sent a response
+                    }
                     Err(status) => {
                         error!("Open failed: {:?}", status);
 
@@ -732,18 +734,14 @@ where
         // Ok(())
     }
 }
+
 /// Function to create an SFTP source and decode an SFTP packet from it
 /// to avoid code duplication
 fn create_sftp_source_and_packet(
-    buffer_in: &[u8],
-    buffer_in_lower_index_bracket: usize,
+    buf: &[u8],
 ) -> (SftpSource<'_>, Result<SftpPacket<'_>, WireError>) {
-    debug!(
-        "Creating a source: lower_index_bracket = {:?}, buffer_len = {:?}",
-        buffer_in_lower_index_bracket,
-        buffer_in.len()
-    );
-    let mut source = SftpSource::new(&buffer_in[buffer_in_lower_index_bracket..]);
+    debug!("Creating a source: buf_len = {:?}", buf.len());
+    let mut source = SftpSource::new(&buf);
 
     let sftp_packet = SftpPacket::decode_request(&mut source);
     (source, sftp_packet)
