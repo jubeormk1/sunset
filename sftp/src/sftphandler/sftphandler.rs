@@ -152,8 +152,6 @@ where
         output_producer: &SftpOutputProducer<'_, BUFFER_OUT_SIZE>,
     ) -> SftpResult<()> {
         let mut buf = buffer_in;
-        // let in_len = buffer_in.len();
-        // let mut buffer_in_lower_index_bracket = 0;
 
         trace!("Received {:} bytes to process", buf.len());
 
@@ -163,6 +161,7 @@ where
             return Err(WireError::PacketWrong.into());
         }
 
+        trace!("Entering loop to process the full received buffer");
         while buf.len() > 0 {
             debug!(
                 "<=======================[ SFTP Process State: {:?} ]=======================> Buffer remaining: {}",
@@ -392,11 +391,6 @@ where
                 SftpHandleState::Idle => {
                     let (mut source, sftp_packet) =
                         create_sftp_source_and_packet(buf);
-                    debug!(
-                        "Source remaining = {} <= Buf len = {}",
-                        source.remaining(),
-                        buf.len()
-                    );
                     match sftp_packet {
                         Ok(request) => {
                             Self::handle_general_request(
@@ -431,7 +425,6 @@ where
                                             SftpError::WireError(
                                                 WireError::RanOut,
                                             ) => {
-                                                debug!("");
                                                 let read = self
                                                     .incomplete_request_holder
                                                     .try_hold(&buf)?;
@@ -460,15 +453,12 @@ where
                         },
                     };
                     buf = &buf[buf.len() - source.remaining()..];
-                    debug!("New buffer len {} bytes ", buf.len())
+                    trace!("New buffer len {} bytes ", buf.len())
                 }
             }
-            debug!("Process checking buf len {:?}", buf.len());
-            if buf.len() == 0 {
-                break;
-            }
+            trace!("Process checking buf len {:?}", buf.len());
         }
-        debug!("Exiting process with Ok(())");
+        trace!("Exiting process with Ok(())");
         Ok(())
     }
 
@@ -635,6 +625,9 @@ where
                 {
                     Ok(_) => {
                         // dir_reply should have sent a response
+                        // output_producer
+                        //     .send_status(req_id, StatusCode::SSH_FX_EOF, "")
+                        //     .await?;
                     }
                     Err(status) => {
                         error!("Open failed: {:?}", status);
