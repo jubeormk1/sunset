@@ -616,7 +616,7 @@ where
             SftpPacket::ReadDir(req_id, read_dir) => {
                 // TODO I should send back an EOF response when all the files in folder have been sent AND I have been asked for more files.
                 // According to https://datatracker.ietf.org/doc/html/draft-ietf-secsh-filexfer-02#section-6.7
-                // This should be the file_server responsability
+                // This should be the file_server responsibility
                 output_producer
                     .send_status(req_id, StatusCode::SSH_FX_EOF, "")
                     .await?;
