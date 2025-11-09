@@ -4,10 +4,10 @@ use crate::error::SftpError;
 use crate::handles::OpaqueFileHandle;
 use crate::proto::{
     self, InitVersionLowest, ReqId, SFTP_MINIMUM_PACKET_LEN, SFTP_VERSION, SftpNum,
-    SftpPacket, StatusCode,
+    SftpPacket, Status, StatusCode,
 };
 use crate::requestholder::{RequestHolder, RequestHolderError};
-use crate::server::{DirReply, ReadStatus, SftpOpResult};
+use crate::server::{DirReply, ReadStatus, SftpOpResult, SftpSink};
 use crate::sftperror::SftpResult;
 use crate::sftphandler::sftpoutputchannelhandler::{
     SftpOutputPipe, SftpOutputProducer,
@@ -17,7 +17,7 @@ use crate::sftpsource::SftpSource;
 
 use embassy_futures::select::select;
 use sunset::Error as SunsetError;
-use sunset::sshwire::{SSHSource, WireError};
+use sunset::sshwire::{SSHEncode, SSHSource, WireError};
 use sunset_async::ChanInOut;
 
 use core::u32;
@@ -629,9 +629,23 @@ where
                 // This should be the file_server responsibility
 
                 if (*last_read_status).eq(&ReadStatus::EndOfFile) {
-                    output_producer
-                        .send_status(req_id, StatusCode::SSH_FX_EOF, "")
-                        .await?;
+                    let packet = SftpPacket::Status(
+                        req_id,
+                        Status {
+                            code: StatusCode::SSH_FX_EOF,
+                            message: "".into(),
+                            lang: "en-US".into(),
+                        },
+                    );
+                    let mut buf = [0u8; 256];
+                    let mut sink = SftpSink::new(&mut buf);
+                    packet.encode_response(&mut sink)?;
+                    debug!("Output Producer: Sending packet {:?}", packet);
+                    sink.finalize();
+                    output_producer.send_data(sink.used_slice()).await?;
+                    // output_producer
+                    //     .send_status(req_id, StatusCode::SSH_FX_EOF, "")
+                    //     .await?;
                     *last_read_status = ReadStatus::PendingData;
                     return Ok(());
                 }
@@ -645,9 +659,9 @@ where
                     Ok(read_status) => {
                         *last_read_status = read_status;
                         // dir_reply should have sent a response
-                        // output_producer
-                        //     .send_status(req_id, StatusCode::SSH_FX_EOF, "")
-                        //     .await?;
+                        output_producer
+                            .send_status(req_id, StatusCode::SSH_FX_EOF, "")
+                            .await?;
                     }
                     Err(status) => {
                         error!("Open failed: {:?}", status);
