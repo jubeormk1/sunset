@@ -4,10 +4,10 @@ use crate::error::SftpError;
 use crate::handles::OpaqueFileHandle;
 use crate::proto::{
     self, InitVersionLowest, ReqId, SFTP_MINIMUM_PACKET_LEN, SFTP_VERSION, SftpNum,
-    SftpPacket, Status, StatusCode,
+    SftpPacket, StatusCode,
 };
 use crate::requestholder::{RequestHolder, RequestHolderError};
-use crate::server::{DirReply, ReadStatus, SftpOpResult, SftpSink};
+use crate::server::DirReply;
 use crate::sftperror::SftpResult;
 use crate::sftphandler::sftpoutputchannelhandler::{
     SftpOutputPipe, SftpOutputProducer,
@@ -17,7 +17,7 @@ use crate::sftpsource::SftpSource;
 
 use embassy_futures::select::select;
 use sunset::Error as SunsetError;
-use sunset::sshwire::{SSHEncode, SSHSource, WireError};
+use sunset::sshwire::{SSHSource, WireError};
 use sunset_async::ChanInOut;
 
 use core::u32;
@@ -52,45 +52,17 @@ enum FragmentedRequestState {
     ProcessingLongRequest,
 }
 
-// // TODO Generalize this to allow other request types
-// /// Used to keep record of a long SFTP Write request that does not fit in
-// /// receiving buffer and requires processing in batches
-// #[derive(Debug)]
-// pub struct PartialWriteRequestTracker<T: OpaqueFileHandle> {
-//     req_id: ReqId,
-//     opaque_handle: T,
-//     remain_data_len: u32,
-//     remain_data_offset: u64,
-// }
-
-// impl<T: OpaqueFileHandle> PartialWriteRequestTracker<T> {
-//     /// Creates a new [`PartialWriteRequestTracker`]
-//     pub fn new(
-//         req_id: ReqId,
-//         opaque_handle: T,
-//         remain_data_len: u32,
-//         remain_data_offset: u64,
-//     ) -> WireResult<Self> {
-//         Ok(PartialWriteRequestTracker {
-//             req_id,
-//             opaque_handle: opaque_handle,
-//             remain_data_len,
-//             remain_data_offset,
-//         })
-//     }
-//     /// Returns the opaque file handle associated with the request
-//     /// tracked
-//     pub fn get_opaque_file_handle(&self) -> T {
-//         self.opaque_handle.clone()
-//     }
-// }
-
 /// Process the raw buffers in and out from a subsystem channel decoding
 /// request and encoding responses
 ///
 /// It will delegate request to an [`crate::sftpserver::SftpServer`]
 /// implemented by the library
 /// user taking into account the local system details.
+///
+/// The compiler time constant `BUFFER_OUT_SIZE` is used to define the
+/// size of the output buffer for the subsystem [`Embassy-sync::pipe`] used
+/// to send responses safely across the instantiated structure.
+///
 pub struct SftpHandler<'a, T, S, const BUFFER_OUT_SIZE: usize>
 where
     T: OpaqueFileHandle,
@@ -240,6 +212,25 @@ where
                                 self.state = SftpHandleState::Idle;
                             }
                             Err(e) => match e {
+                                WireError::UnknownPacket { number } => {
+                                    warn!(
+                                        "Unknown packet: packetId = {:?}. Will flush \
+                                    its length and send unsupported back",
+                                        number
+                                    );
+
+                                    let req_id = ReqId(source.peak_packet_req_id()?);
+                                    let len =
+                                        source.peak_total_packet_len()? as usize;
+                                    source.consume_first(len)?;
+                                    output_producer
+                                        .send_status(
+                                            req_id,
+                                            StatusCode::SSH_FX_OP_UNSUPPORTED,
+                                            "Error decoding SFTP Packet",
+                                        )
+                                        .await?;
+                                }
                                 WireError::RanOut => match Self::handle_ran_out(
                                     &mut self.file_server,
                                     output_producer,
@@ -441,6 +432,36 @@ where
                                     }
                                 };
                             }
+                            WireError::UnknownPacket { number } => {
+                                warn!(
+                                    "Unknown packet: packetId = {:?}. Will flush \
+                                    its length and send unsupported back",
+                                    number
+                                );
+                                /* TODO: The packet is unknown, but we are not consuming it properly.
+                                That has the side effect that we will be interpreting chunks of that packet
+                                as new packets and sending more garbage back to the client
+                                Will result on an Close and not simply a clean message saying that
+                                - Peek out the ReqId
+                                - Peek out the length
+
+                                - flush the packet len if possible (do we have the whole length?)
+
+                                - Send an StatusCode with the relevant ReqId
+
+                                - Move on!
+                                */
+                                let req_id = ReqId(source.peak_packet_req_id()?);
+                                let len = source.peak_total_packet_len()? as usize;
+                                source.consume_first(len)?;
+                                output_producer
+                                    .send_status(
+                                        req_id,
+                                        StatusCode::SSH_FX_OP_UNSUPPORTED,
+                                        "Error decoding SFTP Packet",
+                                    )
+                                    .await?;
+                            }
                             _ => {
                                 error!("Error decoding SFTP Packet: {:?}", e);
                                 output_producer
@@ -476,7 +497,7 @@ where
         let mut sftp_output_pipe = SftpOutputPipe::<BUFFER_OUT_SIZE>::new();
 
         let (mut output_consumer, output_producer) =
-            sftp_output_pipe.split(chan_out);
+            sftp_output_pipe.split(chan_out)?;
 
         let output_consumer_loop = output_consumer.receive_task();
 
@@ -493,6 +514,7 @@ where
 
                 self.process(&buffer_in[0..lr], &output_producer).await?;
             }
+            #[allow(unreachable_code)]
             SftpResult::Ok(())
         };
         match select(processing_loop, output_consumer_loop).await {
@@ -530,15 +552,15 @@ where
                 return Err(SftpError::AlreadyInitialized);
             }
             SftpPacket::PathInfo(req_id, path_info) => {
-                let a_name = file_server.realpath(path_info.path.as_str()?)?;
+                let dir_reply = DirReply::new(req_id, output_producer);
+                let name_entry = file_server.realpath(path_info.path.as_str()?)?;
 
-                let response = SftpPacket::Name(req_id, a_name);
-                debug!(
-                    "Request Id {:?}. Encoding response: {:?}",
-                    &req_id, &response
-                );
-
-                output_producer.send_packet(&response).await?;
+                let encoded_len =
+                    crate::sftpserver::helpers::get_name_entry_len(&name_entry)?;
+                debug!("PathInfo encoded length: {:?}", encoded_len);
+                trace!("PathInfo Response content: {:?}", encoded_len);
+                dir_reply.send_header(1, encoded_len).await?;
+                dir_reply.send_item(&name_entry).await?;
             }
             SftpPacket::Open(req_id, open) => {
                 match file_server.open(open.filename.as_str()?, &open.attrs) {

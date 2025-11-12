@@ -1,3 +1,5 @@
+use crate::sftpsource::SftpSource;
+
 use sunset::sshwire::{
     BinString, SSHDecode, SSHEncode, SSHSink, SSHSource, TextString, WireError,
     WireResult,
@@ -13,17 +15,26 @@ use paste::paste;
 #[allow(unused)]
 pub const SFTP_MINIMUM_PACKET_LEN: usize = 9;
 
-/// SFTP packets have the packet type after a u32 length field
-#[allow(unused)]
-pub const SFTP_FIELD_ID_INDEX: usize = 4;
-/// SFTP packets ID length is 1 byte
-// pub const SFTP_FIELD_ID_LEN: usize = 1;
-/// SFTP packets start with the length field
 #[allow(unused)]
 pub const SFTP_FIELD_LEN_INDEX: usize = 0;
 /// SFTP packets length field us u32
 #[allow(unused)]
 pub const SFTP_FIELD_LEN_LENGTH: usize = 4;
+/// SFTP packets have the packet type after a u32 length field
+#[allow(unused)]
+pub const SFTP_FIELD_ID_INDEX: usize = 4;
+/// SFTP packets ID length is 1 byte
+#[allow(unused)]
+pub const SFTP_FIELD_ID_LEN: usize = 1;
+/// SFTP packets start with the length field
+
+/// SFTP packets have the packet request id after field id
+#[allow(unused)]
+pub const SFTP_FIELD_REQ_ID_INDEX: usize = 5;
+/// SFTP packets ID length is 1 byte
+#[allow(unused)]
+pub const SFTP_FIELD_REQ_ID_LEN: usize = 4;
+/// SFTP packets start with the length field
 
 // SSH_FXP_WRITE SFTP Packet definition used to decode long packets that do not fit in one buffer
 
@@ -202,44 +213,65 @@ pub struct NameEntry<'a> {
     pub attrs: Attrs,
 }
 
+/// This is the encoded length for the Name Sftp Response.
+///
+/// This considers the Packet type (1), the Request Id (4) and
+/// count of [`NameEntry`] that will follow
+///
+/// It excludes the length of [`NameEntry`] explicitly
+///
+/// It is defined a single source of truth for what is the length for the
+/// encoded [`SftpPacket::Name`] variant
+///
+/// See [Responses from the Server to the Client](https://datatracker.ietf.org/doc/html/draft-ietf-secsh-filexfer-02#section-7)
+pub(crate) const ENCODED_BASE_NAME_SFTP_PACKET_LENGTH: u32 = 9;
+
 // TODO Will a Vector be an issue for no_std?
 // Maybe we should migrate this to heapless::Vec and let the user decide
 // the number of elements via features flags?
+/// This is the first part of the `SSH_FXP_NAME` response. It includes
+/// only the count of [`NameEntry`] items that follow this Name
+///
+/// After encoding or decoding [`Name`], [`NameEntry`] must be encoded or
+/// decoded `count` times
 /// A collection of [`NameEntry`] used for [ssh_fxp_name responses](https://datatracker.ietf.org/doc/html/draft-ietf-secsh-filexfer-02#section-7).
 #[derive(Debug)]
-pub struct Name<'a>(pub Vec<NameEntry<'a>>);
+// pub struct Name<'a>(pub Vec<NameEntry<'a>>);
+pub struct Name {
+    /// Number of [`NameEntry`] items that follow this Name
+    pub count: u32,
+}
 
-impl<'a: 'de, 'de> SSHDecode<'de> for Name<'a>
-where
-    'de: 'a,
-{
+impl<'de> SSHDecode<'de> for Name {
     fn dec<S>(s: &mut S) -> WireResult<Self>
     where
         S: SSHSource<'de>,
     {
-        let count = u32::dec(s)? as usize;
+        let count = u32::dec(s)? as u32;
 
-        let mut names = Vec::with_capacity(count);
+        // let mut names = Vec::with_capacity(count);
 
-        for _ in 0..count {
-            names.push(NameEntry::dec(s)?);
-        }
+        // for _ in 0..count {
+        //     names.push(NameEntry::dec(s)?);
+        // }
 
-        Ok(Name(names))
+        Ok(Name { count })
     }
 }
 
-impl<'a> SSHEncode for Name<'a> {
+impl SSHEncode for Name {
     fn enc(&self, s: &mut dyn SSHSink) -> WireResult<()> {
-        (self.0.len() as u32).enc(s)?;
+        self.count.enc(s)
+        // (self.0.len() as u32).enc(s)?;
 
-        for element in self.0.iter() {
-            element.enc(s)?;
-        }
-        Ok(())
+        // for element in self.0.iter() {
+        //     element.enc(s)?;
+        // }
+        // Ok(())
     }
 }
 
+// TODO: Is this really necessary?
 #[derive(Debug, SSHEncode, SSHDecode)]
 pub struct ResponseAttributes {
     pub attrs: Attrs,
@@ -247,7 +279,7 @@ pub struct ResponseAttributes {
 
 // Requests/Responses data types
 
-#[derive(Debug, SSHEncode, SSHDecode, Clone, Copy)]
+#[derive(Debug, SSHEncode, SSHDecode, Clone, Copy, PartialEq)]
 pub struct ReqId(pub u32);
 
 /// For more information see [Responses from the Server to the Client](https://datatracker.ietf.org/doc/html/draft-ietf-secsh-filexfer-02#section-7)
@@ -314,6 +346,8 @@ impl SSHEncode for StatusCode {
     }
 }
 
+// TODO: Implement extensions. Low in priority
+/// Provided to provide a mechanism to implement extensions
 #[derive(Debug, SSHEncode, SSHDecode)]
 pub struct ExtPair<'a> {
     pub name: &'a str,
@@ -476,7 +510,7 @@ macro_rules! sftpmessages {
     ) => {
         paste! {
             /// Represent a subset of the SFTP packet types defined by draft-ietf-secsh-filexfer-02
-            #[derive(Debug, Clone, FromPrimitive, SSHEncode)]
+            #[derive(Debug, Clone, PartialEq, FromPrimitive, SSHEncode)]
             #[repr(u8)]
             #[allow(non_camel_case_types)]
             pub enum SftpNum {
@@ -697,9 +731,9 @@ macro_rules! sftpmessages {
             /// Decode a response.
             ///
             /// Used by a SFTP client. Does not include the length field.
-            pub fn decode_response<'de, S>(s: &mut S) -> WireResult<(ReqId, Self)>
+            pub fn decode_response<'de>(s: &mut SftpSource<'de>) -> WireResult<(ReqId, Self)>
                 where
-                S: SSHSource<'de>,
+                // S: SftpSource<'de>,
                 'a: 'de, // 'a must outlive 'de and 'de must outlive 'a so they have matching lifetimes
                 'de: 'a
             {
@@ -721,9 +755,9 @@ macro_rules! sftpmessages {
             /// Used by a SFTP server. Does not include the length field.
             ///
             /// It will fail if the received packet is a response, no valid or incomplete packet
-            pub fn decode_request<'de, S>(s: &mut S) -> WireResult<Self>
+            pub fn decode_request<'de>(s: &mut SftpSource<'de>) -> WireResult<Self>
                 where
-                S: SSHSource<'de>,
+                // S: SftpSource<'de>,
                 'a: 'de, // 'a must outlive 'de and 'de must outlive 'a so they have matching lifetimes
                 'de: 'a
             {
@@ -742,7 +776,11 @@ macro_rules! sftpmessages {
                         }
                     },
                     Err(e) => {
-                        Err(e)
+                        match e {
+                            WireError::UnknownPacket{..} if !s.packet_fits()? => Err(WireError::RanOut),
+                            _ => Err(e)
+                        }
+
                     }
                 }
             }
@@ -819,7 +857,7 @@ sftpmessages! [
             (101, Status, Status<'a>, "ssh_fxp_status"),
             (102, Handle, Handle<'a>, "ssh_fxp_handle"),
             (103, Data, Data<'a>, "ssh_fxp_data"),
-            (104, Name, Name<'a>, "ssh_fxp_name"),
+            (104, Name, Name, "ssh_fxp_name"),
         },
 ];
 

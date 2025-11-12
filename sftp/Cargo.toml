@@ -1,7 +1,13 @@
 [package]
 name = "sunset-sftp"
-version = "0.1.1"
+version = "0.1.2"
 edition = "2024"
+
+[features]
+default = []
+
+# Standard library support - enables std helpers
+std = []
 
 [dependencies]
 sunset = { version = "0.3.0", path = "../" }

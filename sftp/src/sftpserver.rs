@@ -1,17 +1,19 @@
 use crate::error::SftpResult;
-use crate::proto::{MAX_NAME_ENTRY_SIZE, NameEntry};
+use crate::proto::{
+    ENCODED_BASE_NAME_SFTP_PACKET_LENGTH, MAX_NAME_ENTRY_SIZE, NameEntry,
+};
 use crate::server::SftpSink;
 use crate::sftphandler::SftpOutputProducer;
 use crate::{
     handles::OpaqueFileHandle,
-    proto::{Attrs, Name, ReqId, StatusCode},
+    proto::{Attrs, ReqId, StatusCode},
 };
 
-use core::marker::PhantomData;
-use log::{debug, error, trace};
 use sunset::sshwire::SSHEncode;
 
-// use futures::executor::block_on; TODO Deal with the async nature of [`ChanOut`]
+use core::marker::PhantomData;
+#[allow(unused_imports)]
+use log::{debug, error, info, log, trace, warn};
 
 /// Result used to store the result of an Sftp Operation
 pub type SftpOpResult<T> = core::result::Result<T, StatusCode>;
@@ -133,7 +135,7 @@ where
     }
 
     /// Provides the real path of the directory specified
-    fn realpath(&mut self, dir: &str) -> SftpOpResult<Name<'_>> {
+    fn realpath(&mut self, dir: &str) -> SftpOpResult<NameEntry<'_>> {
         log::error!("SftpServer RealPath operation not defined: dir = {:?}", dir);
         Err(StatusCode::SSH_FX_OP_UNSUPPORTED)
     }
@@ -206,6 +208,8 @@ pub struct DirReply<'g, const N: usize> {
 }
 
 impl<'g, const N: usize> DirReply<'g, N> {
+    // const ENCODED_NAME_SFTP_PACKET_LENGTH: u32 = 9;
+
     /// New instances can only be created within the crate. Users can only
     /// use other public methods to use it.
     pub(crate) fn new(
@@ -221,24 +225,23 @@ impl<'g, const N: usize> DirReply<'g, N> {
     /// length of all these [`NameEntry`] items
     pub async fn send_header(
         &self,
-        get_count: u32,
-        get_encoded_len: u32,
+        count: u32,
+        items_encoded_len: u32,
     ) -> SftpResult<()> {
         debug!(
             "I will send the header here for request id {:?}: count = {:?}, length = {:?}",
-            self.req_id, get_count, get_encoded_len
+            self.req_id, count, items_encoded_len
         );
         let mut s = [0u8; N];
         let mut sink = SftpSink::new(&mut s);
 
-        get_encoded_len.enc(&mut sink)?;
-        104u8.enc(&mut sink)?; // TODO Replace hack with 
-        self.req_id.enc(&mut sink)?;
-        let encoded_name_sftp_packet_length: u32 = 9;
         // We need to consider the packet type, Id and count fields
         // This way I collect data required for the header and collect
         // valid entries into a vector (only std)
-        (get_count + encoded_name_sftp_packet_length).enc(&mut sink)?;
+        (items_encoded_len + ENCODED_BASE_NAME_SFTP_PACKET_LENGTH).enc(&mut sink)?;
+        104u8.enc(&mut sink)?; // TODO Replace hack with 
+        self.req_id.enc(&mut sink)?;
+        count.enc(&mut sink)?;
         let payload = sink.payload_slice();
         debug!(
             "Sending header:  len = {:?}, content = {:?}",
@@ -266,5 +269,167 @@ impl<'g, const N: usize> DirReply<'g, N> {
     /// Sends EOF meaning that there is no more files in the directory
     pub async fn send_eof(&self) -> SftpResult<()> {
         self.chan_out.send_status(self.req_id, StatusCode::SSH_FX_EOF, "").await
+    }
+}
+
+pub mod helpers {
+    use crate::{
+        error::SftpResult,
+        proto::{MAX_NAME_ENTRY_SIZE, NameEntry},
+        server::SftpSink,
+    };
+
+    use sunset::sshwire::SSHEncode;
+
+    /// Helper function to get the length of a [`NameEntry`]
+    pub fn get_name_entry_len(name_entry: &NameEntry<'_>) -> SftpResult<u32> {
+        let mut buf = [0u8; MAX_NAME_ENTRY_SIZE];
+        let mut temp_sink = SftpSink::new(&mut buf);
+        name_entry.enc(&mut temp_sink)?;
+        Ok(temp_sink.payload_len() as u32)
+    }
+}
+
+// TODO Add this to SFTP library only available with std as a global helper
+#[cfg(feature = "std")]
+use crate::proto::Filename;
+#[cfg(feature = "std")]
+use std::{
+    fs::{DirEntry, Metadata, ReadDir},
+    os::{linux::fs::MetadataExt, unix::fs::PermissionsExt},
+    time::SystemTime,
+};
+
+#[cfg(feature = "std")]
+/// This is a helper structure to make ReadDir into something manageable for
+/// [`DirReply`]
+///
+/// WIP: Not stable. It has know issues and most likely it's methods will change
+///
+/// BUG: It does not include longname and that may be an issue
+#[derive(Debug)]
+pub struct DirEntriesCollection {
+    /// Number of elements
+    count: u32,
+    /// Computed length of all the encoded elements
+    encoded_length: u32,
+    /// The actual entries. As you can see these are DirEntry. This is a std choice
+    entries: Vec<DirEntry>,
+}
+
+#[cfg(feature = "std")]
+impl DirEntriesCollection {
+    /// Creates this DirEntriesCollection so linux std users do not need to
+    /// translate `std` directory elements into Sftp structures before sending a response
+    /// back to the client
+    pub fn new(dir_iterator: ReadDir) -> Self {
+        use log::info;
+
+        let mut encoded_length = 0;
+
+        let entries: Vec<DirEntry> = dir_iterator
+            .filter_map(|entry_result| {
+                let entry = entry_result.ok()?;
+                let filename = entry.file_name().to_string_lossy().into_owned();
+                let name_entry = NameEntry {
+                    filename: Filename::from(filename.as_str()),
+                    _longname: Filename::from(""),
+                    attrs: Self::get_attrs_or_empty(entry.metadata()),
+                };
+
+                let mut buffer = [0u8; MAX_NAME_ENTRY_SIZE];
+                let mut sftp_sink = SftpSink::new(&mut buffer);
+                name_entry.enc(&mut sftp_sink).ok()?;
+                //TODO remove this unchecked casting
+                encoded_length += sftp_sink.payload_len() as u32;
+                Some(entry)
+            })
+            .collect();
+
+        //TODO remove this unchecked casting
+        let count = entries.len() as u32;
+
+        info!(
+            "Processed {} entries, estimated serialized length: {}",
+            count, encoded_length
+        );
+
+        Self { count, encoded_length, entries }
+    }
+
+    /// Using the provided [`DirReply`] sends a response taking care of
+    /// composing a SFTP Entry header and sending everything in the right order
+    ///
+    /// Returns a [`ReadStatus`]
+    pub async fn send_response<const N: usize>(
+        &self,
+        reply: &DirReply<'_, N>,
+    ) -> SftpOpResult<ReadStatus> {
+        self.send_entries_header(reply).await?;
+        self.send_entries(reply).await?;
+        Ok(ReadStatus::EndOfFile)
+    }
+    /// Sends a header for all the elements in the ReadDir iterator
+    ///
+    /// It will take care of counting them and finding the serialized length of each
+    /// element
+    async fn send_entries_header<const N: usize>(
+        &self,
+        reply: &DirReply<'_, N>,
+    ) -> SftpOpResult<()> {
+        reply.send_header(self.count, self.encoded_length).await.map_err(|e| {
+            debug!("Could not send header {e:?}");
+            StatusCode::SSH_FX_FAILURE
+        })
+    }
+
+    /// Sends the entries in the ReadDir iterator back to the client
+    async fn send_entries<const N: usize>(
+        &self,
+        reply: &DirReply<'_, N>,
+    ) -> SftpOpResult<()> {
+        for entry in &self.entries {
+            let filename = entry.file_name().to_string_lossy().into_owned();
+            let attrs = Self::get_attrs_or_empty(entry.metadata());
+            let name_entry = NameEntry {
+                filename: Filename::from(filename.as_str()),
+                _longname: Filename::from(""),
+                attrs,
+            };
+            debug!("Sending new item: {:?}", name_entry);
+            reply.send_item(&name_entry).await.map_err(|err| {
+                error!("SftpError: {:?}", err);
+                StatusCode::SSH_FX_FAILURE
+            })?;
+        }
+        Ok(())
+    }
+
+    fn get_attrs_or_empty(
+        maybe_metadata: Result<Metadata, std::io::Error>,
+    ) -> Attrs {
+        maybe_metadata.map(Self::get_attrs).unwrap_or_default()
+    }
+
+    fn get_attrs(metadata: Metadata) -> Attrs {
+        let time_to_u32 = |time_result: std::io::Result<SystemTime>| {
+            time_result
+                .ok()?
+                .duration_since(SystemTime::UNIX_EPOCH)
+                .ok()?
+                .as_secs()
+                .try_into()
+                .ok()
+        };
+
+        Attrs {
+            size: Some(metadata.len()),
+            uid: Some(metadata.st_uid()),
+            gid: Some(metadata.st_gid()),
+            permissions: Some(metadata.permissions().mode()),
+            atime: time_to_u32(metadata.accessed()),
+            mtime: time_to_u32(metadata.modified()),
+            ext_count: None,
+        }
     }
 }
