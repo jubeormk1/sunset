@@ -1,3 +1,5 @@
+use crate::sftpsource::SftpSource;
+
 use sunset::sshwire::{
     BinString, SSHDecode, SSHEncode, SSHSink, SSHSource, TextString, WireError,
     WireResult,
@@ -13,17 +15,26 @@ use paste::paste;
 #[allow(unused)]
 pub const SFTP_MINIMUM_PACKET_LEN: usize = 9;
 
-/// SFTP packets have the packet type after a u32 length field
-#[allow(unused)]
-pub const SFTP_FIELD_ID_INDEX: usize = 4;
-/// SFTP packets ID length is 1 byte
-// pub const SFTP_FIELD_ID_LEN: usize = 1;
-/// SFTP packets start with the length field
 #[allow(unused)]
 pub const SFTP_FIELD_LEN_INDEX: usize = 0;
 /// SFTP packets length field us u32
 #[allow(unused)]
 pub const SFTP_FIELD_LEN_LENGTH: usize = 4;
+/// SFTP packets have the packet type after a u32 length field
+#[allow(unused)]
+pub const SFTP_FIELD_ID_INDEX: usize = 4;
+/// SFTP packets ID length is 1 byte
+#[allow(unused)]
+pub const SFTP_FIELD_ID_LEN: usize = 1;
+/// SFTP packets start with the length field
+
+/// SFTP packets have the packet request id after field id
+#[allow(unused)]
+pub const SFTP_FIELD_REQ_ID_INDEX: usize = 5;
+/// SFTP packets ID length is 1 byte
+#[allow(unused)]
+pub const SFTP_FIELD_REQ_ID_LEN: usize = 4;
+/// SFTP packets start with the length field
 
 // SSH_FXP_WRITE SFTP Packet definition used to decode long packets that do not fit in one buffer
 
@@ -95,9 +106,64 @@ pub struct Open<'a> {
     /// The relative or absolute path of the file to be open
     pub filename: Filename<'a>,
     /// File [permissions flags](https://datatracker.ietf.org/doc/html/draft-ietf-secsh-filexfer-02#section-6.3)
-    pub pflags: u32,
+    pub pflags: PFlags,
     /// Initial attributes for the file
     pub attrs: Attrs,
+}
+
+/// Flags for Open RequestFor more information see [Opening, creating and closing files](https://datatracker.ietf.org/doc/html/draft-ietf-secsh-filexfer-02#section-6.3)
+/// TODO: Reference! This is packed as u32 since that is the field data type in specs
+#[derive(Debug, FromPrimitive, PartialEq)]
+#[repr(u32)]
+#[allow(non_camel_case_types, missing_docs)]
+pub enum PFlags {
+    //#[sshwire(variant = "ssh_fx_read")]
+    SSH_FXF_READ = 0x00000001,
+    //#[sshwire(variant = "ssh_fx_write")]
+    SSH_FXF_WRITE = 0x00000002,
+    //#[sshwire(variant = "ssh_fx_append")]
+    SSH_FXF_APPEND = 0x00000004,
+    //#[sshwire(variant = "ssh_fx_creat")]
+    SSH_FXF_CREAT = 0x00000008,
+    //#[sshwire(variant = "ssh_fx_trunk")]
+    SSH_FXF_TRUNC = 0x00000010,
+    //#[sshwire(variant = "ssh_fx_excl")]
+    SSH_FXF_EXCL = 0x00000020,
+    //#[sshwire(unknown)]
+    #[num_enum(catch_all)]
+    Multiple(u32),
+}
+
+impl<'de> SSHDecode<'de> for PFlags {
+    fn dec<S>(s: &mut S) -> WireResult<Self>
+    where
+        S: SSHSource<'de>,
+    {
+        Ok(PFlags::from(u32::dec(s)?))
+    }
+}
+
+// TODO: Implement an automatic from implementation for u32 to Status code
+// This is prone to errors if we update PFlags enum
+impl From<&PFlags> for u32 {
+    fn from(value: &PFlags) -> Self {
+        match value {
+            PFlags::SSH_FXF_READ => 0x00000001,
+            PFlags::SSH_FXF_WRITE => 0x00000002,
+            PFlags::SSH_FXF_APPEND => 0x00000004,
+            PFlags::SSH_FXF_CREAT => 0x00000008,
+            PFlags::SSH_FXF_TRUNC => 0x00000010,
+            PFlags::SSH_FXF_EXCL => 0x00000020,
+            PFlags::Multiple(value) => *value,
+        }
+    }
+}
+// TODO: Implement an SSHEncode attribute for enums to encode them in a given numeric format
+impl SSHEncode for PFlags {
+    fn enc(&self, s: &mut dyn SSHSink) -> WireResult<()> {
+        let numeric_value: u32 = self.into();
+        numeric_value.enc(s)
+    }
 }
 
 /// Used for `ssh_fxp_open` [response](https://datatracker.ietf.org/doc/html/draft-ietf-secsh-filexfer-02#section-6.7).
@@ -145,6 +211,22 @@ pub struct Write<'a> {
     pub offset: u64,
 
     pub data: BinString<'a>,
+}
+
+/// Used for `ssh_fxp_lstat` [response](https://datatracker.ietf.org/doc/html/draft-ietf-secsh-filexfer-02#section-6.8).
+/// LSTAT does not follow symbolic links
+#[derive(Debug, SSHEncode, SSHDecode)]
+pub struct LStat<'a> {
+    /// The path of the element which stats are to be retrieved
+    pub file_path: TextString<'a>,
+}
+
+/// Used for `ssh_fxp_lstat` [response](https://datatracker.ietf.org/doc/html/draft-ietf-secsh-filexfer-02#section-6.8).
+/// STAT does follow symbolic links
+#[derive(Debug, SSHEncode, SSHDecode)]
+pub struct Stat<'a> {
+    /// The path of the element which stats are to be retrieved
+    pub file_path: TextString<'a>,
 }
 
 // ============================= Responses =============================
@@ -268,7 +350,7 @@ pub struct ResponseAttributes {
 
 // Requests/Responses data types
 
-#[derive(Debug, SSHEncode, SSHDecode, Clone, Copy)]
+#[derive(Debug, SSHEncode, SSHDecode, Clone, Copy, PartialEq)]
 pub struct ReqId(pub u32);
 
 /// For more information see [Responses from the Server to the Client](https://datatracker.ietf.org/doc/html/draft-ietf-secsh-filexfer-02#section-7)
@@ -348,7 +430,7 @@ pub struct ExtPair<'a> {
 /// See [File Attributes](https://datatracker.ietf.org/doc/html/draft-ietf-secsh-filexfer-02#autoid-5)
 /// for more information.
 #[allow(missing_docs)]
-#[derive(Debug, Default)]
+#[derive(Debug, Default, PartialEq)]
 pub struct Attrs {
     pub size: Option<u64>,
     pub uid: Option<u32>,
@@ -499,7 +581,7 @@ macro_rules! sftpmessages {
     ) => {
         paste! {
             /// Represent a subset of the SFTP packet types defined by draft-ietf-secsh-filexfer-02
-            #[derive(Debug, Clone, FromPrimitive, SSHEncode)]
+            #[derive(Debug, Clone, PartialEq, FromPrimitive, SSHEncode)]
             #[repr(u8)]
             #[allow(non_camel_case_types)]
             pub enum SftpNum {
@@ -720,9 +802,9 @@ macro_rules! sftpmessages {
             /// Decode a response.
             ///
             /// Used by a SFTP client. Does not include the length field.
-            pub fn decode_response<'de, S>(s: &mut S) -> WireResult<(ReqId, Self)>
+            pub fn decode_response<'de>(s: &mut SftpSource<'de>) -> WireResult<(ReqId, Self)>
                 where
-                S: SSHSource<'de>,
+                // S: SftpSource<'de>,
                 'a: 'de, // 'a must outlive 'de and 'de must outlive 'a so they have matching lifetimes
                 'de: 'a
             {
@@ -744,9 +826,9 @@ macro_rules! sftpmessages {
             /// Used by a SFTP server. Does not include the length field.
             ///
             /// It will fail if the received packet is a response, no valid or incomplete packet
-            pub fn decode_request<'de, S>(s: &mut S) -> WireResult<Self>
+            pub fn decode_request<'de>(s: &mut SftpSource<'de>) -> WireResult<Self>
                 where
-                S: SSHSource<'de>,
+                // S: SftpSource<'de>,
                 'a: 'de, // 'a must outlive 'de and 'de must outlive 'a so they have matching lifetimes
                 'de: 'a
             {
@@ -765,7 +847,11 @@ macro_rules! sftpmessages {
                         }
                     },
                     Err(e) => {
-                        Err(e)
+                        match e {
+                            WireError::UnknownPacket{..} if !s.packet_fits()? => Err(WireError::RanOut),
+                            _ => Err(e)
+                        }
+
                     }
                 }
             }
@@ -833,9 +919,11 @@ sftpmessages! [
             (4, Close, Close<'a>, "ssh_fxp_close"),
             (5, Read, Read<'a>, "ssh_fxp_read"),
             (6, Write, Write<'a>, "ssh_fxp_write"),
+            (7, LStat, LStat<'a>, "ssh_fxp_lstat"),
             (11, OpenDir, OpenDir<'a>, "ssh_fxp_opendir"),
             (12, ReadDir, ReadDir<'a>, "ssh_fxp_readdir"),
             (16, PathInfo, PathInfo<'a>, "ssh_fxp_realpath"),
+            (17, Stat, Stat<'a>, "ssh_fxp_stat"),
         },
 
         response: {
@@ -843,6 +931,7 @@ sftpmessages! [
             (102, Handle, Handle<'a>, "ssh_fxp_handle"),
             (103, Data, Data<'a>, "ssh_fxp_data"),
             (104, Name, Name, "ssh_fxp_name"),
+            (105, Attrs, Attrs, "ssh_fxp_attrs"),
         },
 ];
 
@@ -850,6 +939,14 @@ sftpmessages! [
 mod proto_tests {
     use super::*;
     use crate::server::SftpSink;
+
+    // TODO: Create tests for every SftpPacket. A good starting point is a
+    // roadtrip test
+
+    #[cfg(test)]
+    extern crate std;
+    #[cfg(test)]
+    use std::println;
 
     #[test]
     fn test_status_encoding() {
@@ -879,5 +976,72 @@ mod proto_tests {
         sink.finalize();
 
         assert_eq!(&expected_status_packet_slice, sink.used_slice());
+    }
+
+    #[test]
+    fn test_attributes_roundtrip() {
+        let mut buff = [0u8; MAX_NAME_ENTRY_SIZE];
+        let attr_read_only = Attrs {
+            size: Some(1),
+            uid: Some(2),
+            gid: Some(3),
+            permissions: Some(222),
+            atime: Some(4),
+            mtime: Some(5),
+            ext_count: None,
+            // ext_count: Some(10), // TODO: This does not get deserialized
+        };
+
+        let mut sink = SftpSink::new(&mut buff);
+        attr_read_only.enc(&mut sink).unwrap();
+        println!(
+            "attr_read_only encoded_len = {:?}, encoded = {:?}",
+            sink.payload_len(),
+            sink.payload_slice()
+        );
+        let mut source = SftpSource::new(sink.payload_slice());
+        println!("source = {:?}", source);
+
+        let a_r = Attrs::dec(&mut source);
+        match a_r {
+            Ok(attrs) => {
+                println!("source = {:?}", attrs);
+                assert_eq!(attr_read_only, attrs);
+            }
+            Err(e) => panic!("The attributes could not be decoded: {:?}", e),
+        }
+    }
+
+    #[test]
+    fn test_packet_open_reading() {
+        let buff_open_read = [
+            0u8, 0, 0,
+            58, //                                                      Len
+            3,  //                                                       SftpPacket
+            0, 0, 0,
+            4, //                                                      ReqId
+            0, 0, 0,
+            41, //                                                     Text String len
+            46, 47, 100, 101, 109, 111, 47, 115, 102,
+            116, //                   file Path
+            112, 47, 115, 116, 100, 47, 116, 101, 115, 116, 105, 110, 103, 47, 111,
+            117, 116, 47, 46, 47, 53, 49, 50, 66, 95, 114, 97, 110, 100, 111,
+            109, //                                          and 41
+            0, 0, 0,
+            1, //                                                      PFlags: 1u32 == SSSH_FXF_READ
+            0, 0, 0,
+            0, //                                                      Attrib flags == 0 No flags, no attributes
+        ];
+
+        let mut source = SftpSource::new(&buff_open_read);
+        println!("source = {:?}", source);
+
+        match SftpPacket::decode_request(&mut source) {
+            Ok(SftpPacket::Open(req_id, open)) => {
+                assert_eq!(PFlags::SSH_FXF_READ, open.pflags);
+            }
+            Ok(other) => panic!("Expected Open packet, got: {:?}", other),
+            Err(e) => panic!("Failed to decode packet: {:?}", e),
+        }
     }
 }

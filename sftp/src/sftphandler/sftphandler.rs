@@ -3,8 +3,8 @@ use super::PartialWriteRequestTracker;
 use crate::error::SftpError;
 use crate::handles::OpaqueFileHandle;
 use crate::proto::{
-    self, InitVersionLowest, ReqId, SFTP_MINIMUM_PACKET_LEN, SFTP_VERSION, SftpNum,
-    SftpPacket, StatusCode,
+    self, InitVersionLowest, LStat, ReqId, SFTP_MINIMUM_PACKET_LEN, SFTP_VERSION,
+    SftpNum, SftpPacket, Stat, StatusCode,
 };
 use crate::requestholder::{RequestHolder, RequestHolderError};
 use crate::server::DirReply;
@@ -51,39 +51,6 @@ enum FragmentedRequestState {
     /// into multiple write actions
     ProcessingLongRequest,
 }
-
-// // TODO Generalize this to allow other request types
-// /// Used to keep record of a long SFTP Write request that does not fit in
-// /// receiving buffer and requires processing in batches
-// #[derive(Debug)]
-// pub struct PartialWriteRequestTracker<T: OpaqueFileHandle> {
-//     req_id: ReqId,
-//     opaque_handle: T,
-//     remain_data_len: u32,
-//     remain_data_offset: u64,
-// }
-
-// impl<T: OpaqueFileHandle> PartialWriteRequestTracker<T> {
-//     /// Creates a new [`PartialWriteRequestTracker`]
-//     pub fn new(
-//         req_id: ReqId,
-//         opaque_handle: T,
-//         remain_data_len: u32,
-//         remain_data_offset: u64,
-//     ) -> WireResult<Self> {
-//         Ok(PartialWriteRequestTracker {
-//             req_id,
-//             opaque_handle: opaque_handle,
-//             remain_data_len,
-//             remain_data_offset,
-//         })
-//     }
-//     /// Returns the opaque file handle associated with the request
-//     /// tracked
-//     pub fn get_opaque_file_handle(&self) -> T {
-//         self.opaque_handle.clone()
-//     }
-// }
 
 /// Process the raw buffers in and out from a subsystem channel decoding
 /// request and encoding responses
@@ -245,6 +212,25 @@ where
                                 self.state = SftpHandleState::Idle;
                             }
                             Err(e) => match e {
+                                WireError::UnknownPacket { number } => {
+                                    warn!(
+                                        "Unknown packet: packetId = {:?}. Will flush \
+                                    its length and send unsupported back",
+                                        number
+                                    );
+
+                                    let req_id = ReqId(source.peak_packet_req_id()?);
+                                    let len =
+                                        source.peak_total_packet_len()? as usize;
+                                    source.consume_first(len)?;
+                                    output_producer
+                                        .send_status(
+                                            req_id,
+                                            StatusCode::SSH_FX_OP_UNSUPPORTED,
+                                            "Error decoding SFTP Packet",
+                                        )
+                                        .await?;
+                                }
                                 WireError::RanOut => match Self::handle_ran_out(
                                     &mut self.file_server,
                                     output_producer,
@@ -446,6 +432,36 @@ where
                                     }
                                 };
                             }
+                            WireError::UnknownPacket { number } => {
+                                warn!(
+                                    "Unknown packet: packetId = {:?}. Will flush \
+                                    its length and send unsupported back",
+                                    number
+                                );
+                                /* TODO: The packet is unknown, but we are not consuming it properly.
+                                That has the side effect that we will be interpreting chunks of that packet
+                                as new packets and sending more garbage back to the client
+                                Will result on an Close and not simply a clean message saying that
+                                - Peek out the ReqId
+                                - Peek out the length
+
+                                - flush the packet len if possible (do we have the whole length?)
+
+                                - Send an StatusCode with the relevant ReqId
+
+                                - Move on!
+                                */
+                                let req_id = ReqId(source.peak_packet_req_id()?);
+                                let len = source.peak_total_packet_len()? as usize;
+                                source.consume_first(len)?;
+                                output_producer
+                                    .send_status(
+                                        req_id,
+                                        StatusCode::SSH_FX_OP_UNSUPPORTED,
+                                        "Error decoding SFTP Packet",
+                                    )
+                                    .await?;
+                            }
                             _ => {
                                 error!("Error decoding SFTP Packet: {:?}", e);
                                 output_producer
@@ -481,7 +497,7 @@ where
         let mut sftp_output_pipe = SftpOutputPipe::<BUFFER_OUT_SIZE>::new();
 
         let (mut output_consumer, output_producer) =
-            sftp_output_pipe.split(chan_out);
+            sftp_output_pipe.split(chan_out)?;
 
         let output_consumer_loop = output_consumer.receive_task();
 
@@ -547,7 +563,7 @@ where
                 dir_reply.send_item(&name_entry).await?;
             }
             SftpPacket::Open(req_id, open) => {
-                match file_server.open(open.filename.as_str()?, &open.attrs) {
+                match file_server.open(open.filename.as_str()?, &open.pflags) {
                     Ok(opaque_file_handle) => {
                         let response = SftpPacket::Handle(
                             req_id,
@@ -642,6 +658,40 @@ where
                         .send_status(req_id, status, "Error Reading Directory")
                         .await?;
                 };
+            }
+            SftpPacket::LStat(req_id, LStat { file_path: path }) => {
+                match file_server.stats(false, path.as_str()?) {
+                    Ok(attrs) => {
+                        debug!("List stats for {} is {:?}", path, attrs);
+
+                        output_producer
+                            .send_packet(&SftpPacket::Attrs(req_id, attrs))
+                            .await?;
+                    }
+                    Err(status) => {
+                        error!("Error listing stats for {}: {:?}", path, status);
+                        output_producer
+                            .send_status(req_id, status, "Could not list attributes")
+                            .await?;
+                    }
+                }
+            }
+            SftpPacket::Stat(req_id, Stat { file_path: path }) => {
+                match file_server.stats(true, path.as_str()?) {
+                    Ok(attrs) => {
+                        debug!("List stats for {} is {:?}", path, attrs);
+
+                        output_producer
+                            .send_packet(&SftpPacket::Attrs(req_id, attrs))
+                            .await?;
+                    }
+                    Err(status) => {
+                        error!("Error listing stats for {}: {:?}", path, status);
+                        output_producer
+                            .send_status(req_id, status, "Could not list attributes")
+                            .await?;
+                    }
+                }
             }
             _ => {
                 error!("Unsupported request type: {:?}", request);

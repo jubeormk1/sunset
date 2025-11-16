@@ -27,7 +27,7 @@
 //! and [write](https://datatracker.ietf.org/doc/html/draft-ietf-secsh-filexfer-02#section-6.4)
 //! - [x] Directory [Browsing](https://datatracker.ietf.org/doc/html/draft-ietf-secsh-filexfer-02#section-6.7)
 //! - [ ] File [read](https://datatracker.ietf.org/doc/html/draft-ietf-secsh-filexfer-02#section-6.4),
-//! - [ ] File [stats](https://datatracker.ietf.org/doc/html/draft-ietf-secsh-filexfer-02#section-6.8)
+//! - [x] File [stats](https://datatracker.ietf.org/doc/html/draft-ietf-secsh-filexfer-02#section-6.8)
 //!
 //! ## Minimal features for convenient usability
 //!
@@ -60,10 +60,10 @@ mod sftpserver;
 mod sftpsink;
 mod sftpsource;
 
-/// Main calling point for the library provided that the user implements
-/// a [`crate::sftpserver::SftpServer`].
-///
-/// Please see basic usage at `../demo/sftd/std`
+// Main calling point for the library provided that the user implements
+// a [`server::SftpServer`].
+//
+// Please see basic usage at `../demo/sftd/std`
 pub use sftphandler::SftpHandler;
 
 /// Structures and types used to add the details for the target system
@@ -84,6 +84,8 @@ pub mod server {
 
         #[cfg(feature = "std")]
         pub use crate::sftpserver::DirEntriesCollection;
+        #[cfg(feature = "std")]
+        pub use crate::sftpserver::get_file_attrs;
     }
     pub use crate::sftpsink::SftpSink;
     pub use sunset::sshwire::SSHEncode;
@@ -103,6 +105,7 @@ pub mod protocol {
     pub use crate::proto::Filename;
     pub use crate::proto::Name;
     pub use crate::proto::NameEntry;
+    pub use crate::proto::PFlags;
     pub use crate::proto::PathInfo;
     pub use crate::proto::StatusCode;
     /// Constants that might be useful for SFTP developers
