@@ -782,7 +782,6 @@ pub struct WinChange {
 #[derive(Debug, SSHEncode, SSHDecode)]
 #[cfg_attr(feature = "arbitrary", derive(Arbitrary))]
 pub struct Environment<'a> {
-    // pub wants_reply: bool, // TODO: needed?
     pub name: TextString<'a>,
     pub value: TextString<'a>,
 }
