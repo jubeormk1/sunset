@@ -3,8 +3,8 @@ use super::PartialWriteRequestTracker;
 use crate::error::SftpError;
 use crate::handles::OpaqueFileHandle;
 use crate::proto::{
-    self, InitVersionLowest, ReqId, SFTP_MINIMUM_PACKET_LEN, SFTP_VERSION, SftpNum,
-    SftpPacket, StatusCode,
+    self, InitVersionLowest, LStat, ReqId, SFTP_MINIMUM_PACKET_LEN, SFTP_VERSION,
+    SftpNum, SftpPacket, Stat, StatusCode,
 };
 use crate::requestholder::{RequestHolder, RequestHolderError};
 use crate::server::DirReply;
@@ -563,7 +563,7 @@ where
                 dir_reply.send_item(&name_entry).await?;
             }
             SftpPacket::Open(req_id, open) => {
-                match file_server.open(open.filename.as_str()?, &open.attrs) {
+                match file_server.open(open.filename.as_str()?, &open.pflags) {
                     Ok(opaque_file_handle) => {
                         let response = SftpPacket::Handle(
                             req_id,
@@ -658,6 +658,40 @@ where
                         .send_status(req_id, status, "Error Reading Directory")
                         .await?;
                 };
+            }
+            SftpPacket::LStat(req_id, LStat { file_path: path }) => {
+                match file_server.stats(false, path.as_str()?) {
+                    Ok(attrs) => {
+                        debug!("List stats for {} is {:?}", path, attrs);
+
+                        output_producer
+                            .send_packet(&SftpPacket::Attrs(req_id, attrs))
+                            .await?;
+                    }
+                    Err(status) => {
+                        error!("Error listing stats for {}: {:?}", path, status);
+                        output_producer
+                            .send_status(req_id, status, "Could not list attributes")
+                            .await?;
+                    }
+                }
+            }
+            SftpPacket::Stat(req_id, Stat { file_path: path }) => {
+                match file_server.stats(true, path.as_str()?) {
+                    Ok(attrs) => {
+                        debug!("List stats for {} is {:?}", path, attrs);
+
+                        output_producer
+                            .send_packet(&SftpPacket::Attrs(req_id, attrs))
+                            .await?;
+                    }
+                    Err(status) => {
+                        error!("Error listing stats for {}: {:?}", path, status);
+                        output_producer
+                            .send_status(req_id, status, "Could not list attributes")
+                            .await?;
+                    }
+                }
             }
             _ => {
                 error!("Unsupported request type: {:?}", request);
