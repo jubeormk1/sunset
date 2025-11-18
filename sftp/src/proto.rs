@@ -41,6 +41,7 @@ pub const SFTP_FIELD_REQ_ID_LEN: usize = 4;
 /// SFTP SSH_FXP_WRITE Packet cannot be shorter than this (len:4+pnum:1+rid:4+hand:4+0+data:4+0 bytes = 17 bytes) [draft-ietf-secsh-filexfer-02](https://datatracker.ietf.org/doc/html/draft-ietf-secsh-filexfer-02#section-6.4)
 // pub const SFTP_MINIMUM_WRITE_PACKET_LEN: usize = 17;
 
+#[allow(unused)]
 /// SFTP SSH_FXP_WRITE Packet request id field index  [draft-ietf-secsh-filexfer-02](https://datatracker.ietf.org/doc/html/draft-ietf-secsh-filexfer-02#section-6.4)
 pub const SFTP_WRITE_REQID_INDEX: usize = 5;
 
@@ -210,8 +211,15 @@ pub struct Write<'a> {
     /// The offset for the read operation
     pub offset: u64,
 
-    pub data: BinString<'a>,
+    pub data_len: u32,
+    // pub data: BinString<'a>, // TODO: Find an elegant way to process the write process
 }
+
+// TODO: This cannot work because we would need a length field
+// #[derive(Debug, SSHEncode, SSHDecode)]
+// pub struct WriteData<'a> {
+//     pub data_slice: &'a [u8],
+// }
 
 /// Used for `ssh_fxp_lstat` [response](https://datatracker.ietf.org/doc/html/draft-ietf-secsh-filexfer-02#section-6.8).
 /// LSTAT does not follow symbolic links
@@ -267,6 +275,20 @@ pub struct Data<'a> {
     /// raw data
     pub data: BinString<'a>,
 }
+
+/// This is the encoded length for the [`Data`] Sftp Response.
+///
+/// This considers the Packet type (1), the request ID (4),  and the data string
+/// length (4)
+///
+/// - It excludes explicitly length field for the SftpPacket
+/// - It excludes explicitly length of the data string content
+///
+/// It is defined a single source of truth for what is the length for the
+/// encoded [`SftpPacket::Data`] variant
+///
+/// See [Responses from the Server to the Client](https://datatracker.ietf.org/doc/html/draft-ietf-secsh-filexfer-02#section-6.4)
+pub(crate) const ENCODED_SSH_FXP_DATA_MIN_LENGTH: u32 = 1 + 4 + 4;
 
 /// Struct to hold `SSH_FXP_NAME` response.
 /// See [SSH_FXP_NAME in Responses from the Server to the Client](https://datatracker.ietf.org/doc/html/draft-ietf-secsh-filexfer-02#section-7)
@@ -350,7 +372,7 @@ pub struct ResponseAttributes {
 
 // Requests/Responses data types
 
-#[derive(Debug, SSHEncode, SSHDecode, Clone, Copy, PartialEq)]
+#[derive(Debug, SSHEncode, SSHDecode, Clone, Copy, PartialEq, Eq)]
 pub struct ReqId(pub u32);
 
 /// For more information see [Responses from the Server to the Client](https://datatracker.ietf.org/doc/html/draft-ietf-secsh-filexfer-02#section-7)
@@ -581,7 +603,7 @@ macro_rules! sftpmessages {
     ) => {
         paste! {
             /// Represent a subset of the SFTP packet types defined by draft-ietf-secsh-filexfer-02
-            #[derive(Debug, Clone, PartialEq, FromPrimitive, SSHEncode)]
+            #[derive(Debug, Copy, Clone, PartialEq, Eq, FromPrimitive, SSHEncode)]
             #[repr(u8)]
             #[allow(non_camel_case_types)]
             pub enum SftpNum {
@@ -642,7 +664,7 @@ macro_rules! sftpmessages {
                 (1..=1).contains(&(u8::from(self.clone())))
             }
 
-            fn is_request(&self) -> bool {
+            pub(crate) fn is_request(&self) -> bool {
                 // TODO SSH_FXP_EXTENDED
                 (3..=20).contains(&(u8::from(self.clone())))
             }
@@ -848,7 +870,7 @@ macro_rules! sftpmessages {
                     },
                     Err(e) => {
                         match e {
-                            WireError::UnknownPacket{..} if !s.packet_fits()? => Err(WireError::RanOut),
+                            WireError::UnknownPacket{..} if !s.packet_fits() => Err(WireError::RanOut),
                             _ => Err(e)
                         }
 
@@ -973,7 +995,6 @@ mod proto_tests {
         ];
 
         let _ = status_packet.encode_response(&mut sink);
-        sink.finalize();
 
         assert_eq!(&expected_status_packet_slice, sink.used_slice());
     }
@@ -1037,7 +1058,7 @@ mod proto_tests {
         println!("source = {:?}", source);
 
         match SftpPacket::decode_request(&mut source) {
-            Ok(SftpPacket::Open(req_id, open)) => {
+            Ok(SftpPacket::Open(_req_id, open)) => {
                 assert_eq!(PFlags::SSH_FXF_READ, open.pflags);
             }
             Ok(other) => panic!("Expected Open packet, got: {:?}", other),

@@ -1,6 +1,6 @@
 use crate::protocol::StatusCode;
 
-use crate::requestholder::RequestHolderError;
+use crate::sftphandler::requestholder::RequestHolderError;
 use sunset::Error as SunsetError;
 use sunset::sshwire::WireError;
 
@@ -60,6 +60,11 @@ impl From<RequestHolderError> for SftpError {
         SftpError::RequestHolderError(value)
     }
 }
+// impl From<FileServerError> for SftpError {
+//     fn from(value: FileServerError) -> Self {
+//         SftpError::FileServerError(value)
+//     }
+// }
 
 impl From<SftpError> for WireError {
     fn from(value: SftpError) -> Self {

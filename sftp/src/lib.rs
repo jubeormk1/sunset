@@ -52,7 +52,6 @@
 
 mod opaquefilehandle;
 mod proto;
-mod requestholder;
 mod sftperror;
 mod sftphandler;
 mod sftpserver;
