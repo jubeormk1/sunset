@@ -392,6 +392,7 @@ impl<'a, CS: CliServ> Runner<'a, CS> {
         if !self.is_input_ready() {
             return Ok(0);
         }
+
         self.traf_in.input(&mut self.keys, &mut self.conn.remote_version, buf)
     }
 
@@ -530,6 +531,7 @@ impl<'a, CS: CliServ> Runner<'a, CS> {
         }
 
         let (len, complete) = self.traf_in.read_channel(chan.0, dt, buf);
+
         if let Some(x) = complete {
             self.finished_read_channel(chan, x)?;
         }

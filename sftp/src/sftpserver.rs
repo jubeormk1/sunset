@@ -1,6 +1,7 @@
-use crate::error::SftpResult;
+use crate::error::{SftpError, SftpResult};
 use crate::proto::{
-    ENCODED_BASE_NAME_SFTP_PACKET_LENGTH, MAX_NAME_ENTRY_SIZE, NameEntry, PFlags,
+    ENCODED_BASE_DATA_SFTP_PACKET_LENGTH, ENCODED_BASE_NAME_SFTP_PACKET_LENGTH,
+    MAX_NAME_ENTRY_SIZE, NameEntry, PFlags, SftpNum, SftpPacket,
 };
 use crate::server::SftpSink;
 use crate::sftphandler::SftpOutputProducer;
@@ -11,7 +12,6 @@ use crate::{
 
 use sunset::sshwire::SSHEncode;
 
-use core::marker::PhantomData;
 #[allow(unused_imports)]
 use log::{debug, error, info, log, trace, warn};
 
@@ -67,18 +67,21 @@ where
         Err(StatusCode::SSH_FX_OP_UNSUPPORTED)
     }
     /// Reads from a file that has previously being opened for reading
-    fn read(
+    #[allow(unused)]
+    async fn read<const N: usize>(
         &mut self,
         opaque_file_handle: &T,
         offset: u64,
-        _reply: &mut ReadReply<'_, '_>,
-    ) -> SftpOpResult<()> {
+        len: u32,
+        reply: &ReadReply<'_, N>,
+    ) -> SftpResult<()> {
         log::error!(
-            "SftpServer Read operation not defined: handle = {:?}, offset = {:?}",
+            "SftpServer Read operation not defined: handle = {:?}, offset = {:?}, len = {:?}",
             opaque_file_handle,
-            offset
+            offset,
+            len
         );
-        Err(StatusCode::SSH_FX_OP_UNSUPPORTED)
+        Err(SftpError::FileServerError(StatusCode::SSH_FX_OP_UNSUPPORTED))
     }
     /// Writes to a file that has previously being opened for writing
     fn write(
@@ -152,29 +155,97 @@ where
 }
 
 // TODO Define this
-/// **This is a work in progress**
 /// A reference structure passed to the [`SftpServer::read()`] method to
 /// allow replying with the read data.
+/// Uses for [`ReadReply`] to:
+///
+/// - In case of no more data avaliable to be sent, call `reply.send_eof()`
+/// - There is data to be sent from an open file:
+///     1. Call `reply.send_header()` with the length of data to be sent
+///     2. Call `reply.send_data()` as many times as needed to complete a
+/// sent of data of the announced length
+///     3. Do not call `reply.send_eof()` during this [`read`] method call
+///
+/// It handles immutable sending data via the underlying sftp-channel
+/// [`sunset_async::async_channel::ChanOut`] used in the context of an
+/// SFTP Session.
+///
+pub struct ReadReply<'g, const N: usize> {
+    /// The request Id that will be use`d in the response
+    req_id: ReqId,
 
-pub struct ReadReply<'g, 'a> {
-    chan: ChanOut<'g, 'a>,
+    /// Immutable writer
+    chan_out: &'g SftpOutputProducer<'g, N>,
 }
 
-impl<'g, 'a> ReadReply<'g, 'a> {
-    /// **This is a work in progress**
-    ///
-    /// Reply with a slice containing the read data
-    /// It can be called several times to send multiple data chunks
-    ///
-    /// **Important**: The first reply should contain the header
-    #[allow(unused_variables)]
-    pub fn reply(self, data: &[u8]) {}
-}
+impl<'g, const N: usize> ReadReply<'g, N> {
+    /// New instances can only be created within the crate. Users can only
+    /// use other public methods to use it.
+    pub(crate) fn new(
+        req_id: ReqId,
+        chan_out: &'g SftpOutputProducer<'g, N>,
+    ) -> Self {
+        ReadReply { req_id, chan_out }
+    }
 
-// TODO Implement correct Channel Out
-pub struct ChanOut<'g, 'a> {
-    _phantom_g: PhantomData<&'g ()>, // 'g look what these might be ChanIO lifetime
-    _phantom_a: PhantomData<&'a ()>, // a' Why the second lifetime if ChanIO only needs one
+    // TODO Make this enforceable
+    /// Sends a header fro `SSH_FXP_DATA` response. This includes the total
+    /// response length, the packet type, request id and data length
+    ///
+    /// The packet data content, excluding the length must be sent using
+    /// [`ReadReply::send_data`]
+    pub async fn send_header(&self, data_len: u32) -> SftpResult<()> {
+        debug!(
+            "ReadReply: Sending header for request id {:?}: data length = {:?}",
+            self.req_id, data_len
+        );
+        let mut s = [0u8; N];
+        let mut sink = SftpSink::new(&mut s);
+
+        // Encoding length field
+        (data_len + ENCODED_BASE_DATA_SFTP_PACKET_LENGTH).enc(&mut sink)?;
+        // Encoding packet type
+        u8::from(SftpNum::SSH_FXP_DATA).enc(&mut sink)?;
+        // Encoding req_id
+        self.req_id.enc(&mut sink)?;
+        // string data length
+        data_len.enc(&mut sink)?;
+
+        let payload = sink.payload_slice();
+        debug!(
+            "Sending header:  len = {:?}, content = {:?}",
+            payload.len(),
+            payload
+        );
+        // Sending payload_slice since we are not making use of the sink sftpPacket length calculation
+        self.chan_out.send_data(payload).await?;
+        Ok(())
+    }
+
+    /// Sends a buffer with data. Call it as many times as needed to send
+    /// the announced data length
+    ///
+    /// **Important**: Call this after you have called `send_header`
+    pub async fn send_data(&self, buff: &[u8]) -> SftpResult<()> {
+        self.chan_out.send_data(buff).await
+    }
+
+    /// Sends EOF meaning that there is no more data to be sent
+    ///
+    pub async fn send_eof(&self) -> SftpResult<()> {
+        self.chan_out.send_status(self.req_id, StatusCode::SSH_FX_EOF, "").await
+    }
+
+    /// Sends EOF with request id increased by one
+    ///
+    /// **Warning**: This is an experimental patch to resolve the situations where a response gets
+    /// stuck
+    ///
+    pub async fn send_eof_plus_one(&self) -> SftpResult<()> {
+        self.chan_out
+            .send_status(ReqId(self.req_id.0 + 1), StatusCode::SSH_FX_EOF, "")
+            .await
+    }
 }
 
 /// Uses for [`DirReply`] to:
@@ -230,7 +301,7 @@ impl<'g, const N: usize> DirReply<'g, N> {
         // This way I collect data required for the header and collect
         // valid entries into a vector (only std)
         (items_encoded_len + ENCODED_BASE_NAME_SFTP_PACKET_LENGTH).enc(&mut sink)?;
-        104u8.enc(&mut sink)?; // TODO Replace hack with 
+        u8::from(SftpNum::SSH_FXP_NAME).enc(&mut sink)?;
         self.req_id.enc(&mut sink)?;
         count.enc(&mut sink)?;
         let payload = sink.payload_slice();
@@ -272,7 +343,11 @@ pub mod helpers {
 
     use sunset::sshwire::SSHEncode;
 
-    /// Helper function to get the length of a [`NameEntry`]
+    /// Helper function to get the length of a given [`NameEntry`]
+    /// as it would be serialized to the wire.
+    ///
+    /// Use this function to calculate the total length of a collection
+    /// of NameEntrys in order to send a correct response Name header
     pub fn get_name_entry_len(name_entry: &NameEntry<'_>) -> SftpResult<u32> {
         let mut buf = [0u8; MAX_NAME_ENTRY_SIZE];
         let mut temp_sink = SftpSink::new(&mut buf);
@@ -281,7 +356,6 @@ pub mod helpers {
     }
 }
 
-// TODO Add this to SFTP library only available with std as a global helper
 #[cfg(feature = "std")]
 use crate::proto::Filename;
 #[cfg(feature = "std")]
@@ -297,7 +371,7 @@ use std::{
 ///
 /// WIP: Not stable. It has know issues and most likely it's methods will change
 ///
-/// BUG: It does not include longname and that may be an issue
+/// TODO: It does not include longname and that may be an issue
 #[derive(Debug)]
 pub struct DirEntriesCollection {
     /// Number of elements
