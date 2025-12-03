@@ -64,6 +64,11 @@ mod sftpsource;
 // Please see basic usage at `../demo/sftd/std`
 pub use sftphandler::SftpHandler;
 
+/// Source of SFTP packets
+/// 
+/// Used to decode SFTP packets from a byte slice
+pub use sftpsource::SftpSource;
+
 /// Structures and types used to add the details for the target system
 /// Related to the implementation of the [`server::SftpServer`], which
 /// is meant to be instantiated by the user and passed to [`SftpHandler`]
@@ -96,6 +101,7 @@ pub mod handles {
 }
 
 pub mod protocol {
+    pub use crate::proto::SftpPacket;
     pub use crate::proto::Attrs;
     pub use crate::proto::FileHandle;
     pub use crate::proto::Filename;
