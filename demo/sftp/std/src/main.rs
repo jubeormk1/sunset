@@ -1,6 +1,6 @@
 use sunset::*;
 use sunset_async::{ProgressHolder, SSHServer, SunsetMutex, SunsetRawMutex};
-use sunset_sftp::SftpHandler;
+use sunset_sftp::{server::MAX_REQUEST_LEN, SftpHandler};
 
 pub(crate) use sunset_demo_common as demo_common;
 
@@ -155,18 +155,20 @@ impl DemoServer for StdDemo {
 
                 // TODO Do some research to find reasonable default buffer lengths
                 let mut buffer_in = [0u8; 512];
-                let mut request_buffer = [0u8; 512];
+                let mut request_buffer = [0u8; MAX_REQUEST_LEN];
 
                 match {
                     let stdio = serv.stdio(ch).await?;
-                    let mut file_server = DemoSftpServer::new(
-                        "./demo/sftp/std/testing/out/".to_string(),
-                    );
+                    let mut file_server =
+                        DemoSftpServer::<DemoOpaqueFileHandle>::new(
+                            "./demo/sftp/std/testing/out/".to_string(),
+                        );
 
-                    SftpHandler::<DemoOpaqueFileHandle, DemoSftpServer, 512>::new(
-                        &mut file_server,
-                        &mut request_buffer,
-                    )
+                    SftpHandler::<
+                        DemoOpaqueFileHandle,
+                        DemoSftpServer<DemoOpaqueFileHandle>,
+                        512,
+                    >::new(&mut file_server, &mut request_buffer)
                     .process_loop(stdio, &mut buffer_in)
                     .await?;
 
@@ -211,27 +213,11 @@ async fn listen(
 
 #[embassy_executor::main]
 async fn main(spawner: Spawner) {
-    let log_path = std::env::var("RUST_LOG_FILE").ok();
-
-    let mut builder = env_logger::Builder::new();
-
-    builder.filter_level(log::LevelFilter::Trace);
-    // if std::env::var("RUST_LOG").is_err() {
-    // } else {
-    //     builder.filter_level(log::LevelFilter::Debug);
-    // }
-    builder.format_timestamp_nanos();
-
-    // if let Some(path) = log_path {
-    //     let file = std::fs::File::create(path).expect("Failed to create log file");
-    //     builder.target(env_logger::Target::Pipe(Box::new(file)));
-    // } else {
-    //     builder.target(env_logger::Target::Stdout);
-    // }
-
-    builder.target(env_logger::Target::Stdout);
-
-    builder.init();
+    env_logger::Builder::new()
+        .filter_level(log::LevelFilter::Info)
+        .format_timestamp_nanos()
+        .target(env_logger::Target::Stdout)
+        .init();
 
     spawner.spawn(main_task(spawner)).unwrap();
 }

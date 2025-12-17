@@ -65,7 +65,7 @@ mod sftpsource;
 pub use sftphandler::SftpHandler;
 
 /// Source of SFTP packets
-/// 
+///
 /// Used to decode SFTP packets from a byte slice
 pub use sftpsource::SftpSource;
 
@@ -92,6 +92,8 @@ pub mod server {
     }
     pub use crate::sftpsink::SftpSink;
     pub use sunset::sshwire::SSHEncode;
+
+    pub use crate::proto::MAX_REQUEST_LEN;
 }
 
 pub mod handles {
@@ -101,7 +103,6 @@ pub mod handles {
 }
 
 pub mod protocol {
-    pub use crate::proto::SftpPacket;
     pub use crate::proto::Attrs;
     pub use crate::proto::FileHandle;
     pub use crate::proto::Filename;
@@ -109,6 +110,7 @@ pub mod protocol {
     pub use crate::proto::NameEntry;
     pub use crate::proto::PFlags;
     pub use crate::proto::PathInfo;
+    pub use crate::proto::SftpPacket;
     pub use crate::proto::StatusCode;
     /// Constants that might be useful for SFTP developers
     pub mod constants {

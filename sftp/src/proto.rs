@@ -49,10 +49,30 @@ pub const SFTP_WRITE_REQID_INDEX: usize = 5;
 // pub const SFTP_WRITE_HANDLE_INDEX: usize = 9;
 
 /// Considering the definition in [Section 7](https://datatracker.ietf.org/doc/html/draft-ietf-secsh-filexfer-02#section-7)
+/// for handle maximum length
+pub const _SSH_FXP_HANDLE_MAX_LEN: u32 = 256;
+
+/// The maximum size for full paths is only limited by the u32 where ssh strings lengths are contained. This causes that different platforms use different maximum path lengths.
+/// We need to make a choice in this implementation. Since it is targeting embedded devices I am going to set it short, since influence the length of the [[requestHolder]] that needs to be allocated
+/// to compose fragmented requests.
+#[cfg(not(any(feature = "long-paths-4096", feature = "long-paths-1024")))]
+pub const MAX_PATH_LEN: usize = 256;
+#[cfg(feature = "long-paths-1024")]
+pub const MAX_PATH_LEN: usize = 1024; // PATH_MAX for macOS
+#[cfg(feature = "long-paths-4096")]
+pub const MAX_PATH_LEN: usize = 4096; // Linux glibc PATH_MAX is typically 4096 bytes
+
+/// Maximum request size, considering [[MAX_PATH_LEN]] but not counting the data payload.
+/// At this moment in time, the longest request is `ssh_fxp_open`
+pub const MAX_REQUEST_LEN: usize = 4 + MAX_PATH_LEN // Filename string
+                                + 4 // PFlags (u32)
+                                + 32; // Attrs (Max 32Bytes not counting extensions)
+
+/// Considering the definition in [Section 7](https://datatracker.ietf.org/doc/html/draft-ietf-secsh-filexfer-02#section-7)
 /// for `SSH_FXP_READDIR`
 ///
-/// (4 + 256) bytes for path, (4 + 0) bytes for empty long path and 72 bytes for the attributes ( 32/4*7 + 64/4 * 1 = 72)
-pub const MAX_NAME_ENTRY_SIZE: usize = 4 + 256 + 4 + 72;
+/// (4 + 256) bytes for filename, (4 + 0) bytes for empty long filename and 72 bytes for the attributes ( 32/4*7 + 64/4 * 1 = 72)
+pub const MAX_NAME_ENTRY_SIZE: usize = 4 + MAX_PATH_LEN + 4 + 72;
 
 // TODO is utf8 enough, or does this need to be an opaque binstring?
 /// See [SSH_FXP_NAME in Responses from the Server to the Client](https://datatracker.ietf.org/doc/html/draft-ietf-secsh-filexfer-02#section-7)
@@ -113,7 +133,6 @@ pub struct Open<'a> {
 }
 
 /// Flags for Open RequestFor more information see [Opening, creating and closing files](https://datatracker.ietf.org/doc/html/draft-ietf-secsh-filexfer-02#section-6.3)
-/// TODO: Reference! This is packed as u32 since that is the field data type in specs
 #[derive(Debug, FromPrimitive, PartialEq)]
 #[repr(u32)]
 #[allow(non_camel_case_types, missing_docs)]
@@ -144,8 +163,7 @@ impl<'de> SSHDecode<'de> for PFlags {
     }
 }
 
-// TODO: Implement an automatic from implementation for u32 to Status code
-// This is prone to errors if we update PFlags enum
+// This is prone to errors if we update PFlags enum: Unlikely
 impl From<&PFlags> for u32 {
     fn from(value: &PFlags) -> Self {
         match value {
@@ -211,15 +229,10 @@ pub struct Write<'a> {
     /// The offset for the read operation
     pub offset: u64,
 
+    /// The data length to be written. Given that it can be arbitrary long, the data is not decoded
+    /// Instead the data_len is used in [[SftpHandler.Process]] to generate SftpServer.Write calls
     pub data_len: u32,
-    // pub data: BinString<'a>, // TODO: Find an elegant way to process the write process
 }
-
-// TODO: This cannot work because we would need a length field
-// #[derive(Debug, SSHEncode, SSHDecode)]
-// pub struct WriteData<'a> {
-//     pub data_slice: &'a [u8],
-// }
 
 /// Used for `ssh_fxp_lstat` [response](https://datatracker.ietf.org/doc/html/draft-ietf-secsh-filexfer-02#section-6.8).
 /// LSTAT does not follow symbolic links
@@ -360,19 +373,12 @@ impl SSHEncode for Name {
     }
 }
 
-// TODO: Is this really necessary?
-#[derive(Debug, SSHEncode, SSHDecode)]
-pub struct ResponseAttributes {
-    pub attrs: Attrs,
-}
-
 // Requests/Responses data types
 
 #[derive(Debug, SSHEncode, SSHDecode, Clone, Copy, PartialEq, Eq)]
 pub struct ReqId(pub u32);
 
 /// For more information see [Responses from the Server to the Client](https://datatracker.ietf.org/doc/html/draft-ietf-secsh-filexfer-02#section-7)
-/// TODO: Reference! This is packed as u32 since that is the field data type in specs
 #[derive(Debug, FromPrimitive)]
 #[repr(u32)]
 #[allow(non_camel_case_types, missing_docs)]
@@ -409,8 +415,7 @@ impl<'de> SSHDecode<'de> for StatusCode {
     }
 }
 
-// TODO: Implement an automatic from implementation for u32 to Status code
-// This is prone to errors if we update StatusCode enum
+// This is prone to errors if we update StatusCode enum: Unlikely to change
 impl From<&StatusCode> for u32 {
     fn from(value: &StatusCode) -> Self {
         match value {
@@ -437,11 +442,11 @@ impl SSHEncode for StatusCode {
 
 // TODO: Implement extensions. Low in priority
 /// Provided to provide a mechanism to implement extensions
-#[derive(Debug, SSHEncode, SSHDecode)]
-pub struct ExtPair<'a> {
-    pub name: &'a str,
-    pub data: BinString<'a>,
-}
+// #[derive(Debug, SSHEncode, SSHDecode)]
+// pub struct ExtPair<'a> {
+//     pub name: &'a str,
+//     pub data: BinString<'a>,
+// }
 
 /// Files attributes to describe Files as SFTP v3 specification
 ///
@@ -680,12 +685,15 @@ macro_rules! sftpmessages {
         #[derive(Debug)]
         pub enum SftpPacket<'a> {
                 $(
+                    #[doc = concat!("Initialization packet: ", $init_ssh_fxp_name)]
                     $init_packet_variant($init_packet_type),
                 )*
                 $(
+                    #[doc = concat!("Request packet: ", $request_ssh_fxp_name)]
                     $request_packet_variant(ReqId, $request_packet_type),
                 )*
                 $(
+                    #[doc = concat!("Response packet: ", $response_ssh_fxp_name)]
                     $response_packet_variant(ReqId, $response_packet_type),
                 )*
 
@@ -964,6 +972,7 @@ sftpmessages! [
             (12, ReadDir, ReadDir<'a>, "ssh_fxp_readdir"),
             (16, PathInfo, PathInfo<'a>, "ssh_fxp_realpath"),
             (17, Stat, Stat<'a>, "ssh_fxp_stat"),
+            // When adding requests, review MAX_REQUEST_LEN in order to adjust its value
         },
 
         response: {
@@ -980,8 +989,7 @@ mod proto_tests {
     use super::*;
     use crate::server::SftpSink;
 
-    // TODO: Create tests for every SftpPacket. A good starting point is a
-    // roadtrip test
+    // TODO: There are always more test that can be done
 
     #[cfg(test)]
     extern crate std;
@@ -992,12 +1000,8 @@ mod proto_tests {
     fn test_data_roundtrip() {
         let data_slice = b"Hello, world!".as_slice();
         let mut buff = [0u8; 512];
-        let data_packet = SftpPacket::Data(
-            ReqId(10),
-            Data {
-                data: BinString(data_slice),
-            },
-        );
+        let data_packet =
+            SftpPacket::Data(ReqId(10), Data { data: BinString(data_slice) });
 
         let mut sink = SftpSink::new(&mut buff);
         data_packet.encode_response(&mut sink).expect("Failed to encode response");
@@ -1059,7 +1063,6 @@ mod proto_tests {
             atime: Some(4),
             mtime: Some(5),
             ext_count: None,
-            // ext_count: Some(10), // TODO: This does not get deserialized
         };
 
         let mut sink = SftpSink::new(&mut buff);

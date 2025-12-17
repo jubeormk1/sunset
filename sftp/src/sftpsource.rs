@@ -103,7 +103,6 @@ impl<'de> SftpSource<'de> {
         Ok(self.peak_packet_len()? + SFTP_FIELD_LEN_LENGTH as u32)
     }
 
-    // TODO: Test This for correctness
     /// Compares the total source capacity and the peaked packet length
     /// plus the length field length itself to find out if the packet fit
     /// in the source  
@@ -136,7 +135,9 @@ impl<'de> SftpSource<'de> {
             Ok(u32::from_be_bytes(bytes))
         }
     }
-
+    /// Returns a slice on the used portion of the held buffer.
+    ///
+    /// This does not modify the internal index
     pub fn buffer_used(&self) -> &[u8] {
         &self.buffer[..self.index]
     }
