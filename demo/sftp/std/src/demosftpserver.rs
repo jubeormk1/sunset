@@ -1,10 +1,7 @@
-use crate::{
-    demofilehandlemanager::DemoFileHandleManager,
-    demoopaquefilehandle::DemoOpaqueFileHandle,
-};
+use crate::demofilehandlemanager::DemoFileHandleManager;
 
 use sunset_sftp::error::SftpResult;
-use sunset_sftp::handles::{OpaqueFileHandleManager, PathFinder};
+use sunset_sftp::handles::{OpaqueFileHandle, OpaqueFileHandleManager, PathFinder};
 use sunset_sftp::protocol::{Attrs, Filename, NameEntry, PFlags, StatusCode};
 use sunset_sftp::server::helpers::DirEntriesCollection;
 use sunset_sftp::server::{
@@ -39,6 +36,7 @@ pub(crate) struct PrivateDirHandle {
     read_status: ReadStatus,
 }
 
+/// It is a better practice generating it on creation. Used to generate the opaque handles instead of using a constant
 static OPAQUE_SALT: &'static str = "12d%32";
 
 impl PathFinder for PrivatePathHandle {
@@ -94,30 +92,34 @@ impl PathFinder for PrivateDirHandle {
 }
 
 /// A basic demo server. Used as a demo and to test SFTP functionality
-pub struct DemoSftpServer {
+pub struct DemoSftpServer<OFH: OpaqueFileHandle> {
     base_path: String,
-    handles_manager: DemoFileHandleManager<DemoOpaqueFileHandle, PrivatePathHandle>,
+    handles_manager: DemoFileHandleManager<OFH, PrivatePathHandle>,
 }
 
-impl DemoSftpServer {
+impl<OFH: OpaqueFileHandle> DemoSftpServer<OFH> {
     pub fn new(base_path: String) -> Self {
-        // TODO What if the base_path does not exist? Create it or Return error?
+        if !Path::new(&base_path).exists() {
+            debug!("Base path {:?} does not exist. Creating it", base_path);
+            if let Err(err) = fs::create_dir_all(&base_path) {
+                error!("Could not create the base path {:?}: {:?}", base_path, err);
+                panic!();
+            }
+        } else {
+            debug!("Base path {:?} already exists", base_path);
+        }
         DemoSftpServer { base_path, handles_manager: DemoFileHandleManager::new() }
     }
 }
 
-impl SftpServer<'_, DemoOpaqueFileHandle> for DemoSftpServer {
-    fn open(
-        &mut self,
-        filename: &str,
-        mode: &PFlags,
-    ) -> SftpOpResult<DemoOpaqueFileHandle> {
+impl<OFH: OpaqueFileHandle> SftpServer<'_, OFH> for DemoSftpServer<OFH> {
+    async fn open(&mut self, filename: &str, mode: &PFlags) -> SftpOpResult<OFH> {
         debug!("Open file: filename = {:?}, mode = {:?}", filename, mode);
 
         let can_write = u32::from(mode) & u32::from(&PFlags::SSH_FXF_WRITE) > 0;
         let can_read = u32::from(mode) & u32::from(&PFlags::SSH_FXF_READ) > 0;
 
-        debug!(
+        info!(
             "File open for read/write access: can_read={:?}, can_write={:?}",
             can_read, can_write
         );
@@ -153,8 +155,8 @@ impl SftpServer<'_, DemoOpaqueFileHandle> for DemoSftpServer {
         fh
     }
 
-    fn opendir(&mut self, dir: &str) -> SftpOpResult<DemoOpaqueFileHandle> {
-        debug!("Open Directory = {:?}", dir);
+    async fn opendir(&mut self, dir: &str) -> SftpOpResult<OFH> {
+        info!("Open Directory = {:?}", dir);
 
         let dir_handle = self.handles_manager.insert(
             PrivatePathHandle::Directory(PrivateDirHandle {
@@ -172,7 +174,7 @@ impl SftpServer<'_, DemoOpaqueFileHandle> for DemoSftpServer {
         dir_handle
     }
 
-    fn realpath(&mut self, dir: &str) -> SftpOpResult<NameEntry<'_>> {
+    async fn realpath(&mut self, dir: &str) -> SftpOpResult<NameEntry<'_>> {
         info!("finding path for: {:?}", dir);
         let name_entry = NameEntry {
             filename: Filename::from(self.base_path.as_str()),
@@ -191,14 +193,11 @@ impl SftpServer<'_, DemoOpaqueFileHandle> for DemoSftpServer {
         Ok(name_entry)
     }
 
-    fn close(
-        &mut self,
-        opaque_file_handle: &DemoOpaqueFileHandle,
-    ) -> SftpOpResult<()> {
+    async fn close(&mut self, opaque_file_handle: &OFH) -> SftpOpResult<()> {
         if let Some(handle) = self.handles_manager.remove(opaque_file_handle) {
             match handle {
                 PrivatePathHandle::File(private_file_handle) => {
-                    debug!(
+                    info!(
                         "SftpServer Close operation on file {:?} was successful",
                         private_file_handle.path
                     );
@@ -206,7 +205,7 @@ impl SftpServer<'_, DemoOpaqueFileHandle> for DemoSftpServer {
                     Ok(())
                 }
                 PrivatePathHandle::Directory(private_dir_handle) => {
-                    debug!(
+                    info!(
                         "SftpServer Close operation on dir {:?} was successful",
                         private_dir_handle.path
                     );
@@ -225,7 +224,7 @@ impl SftpServer<'_, DemoOpaqueFileHandle> for DemoSftpServer {
 
     async fn read<const N: usize>(
         &mut self,
-        opaque_file_handle: &DemoOpaqueFileHandle,
+        opaque_file_handle: &OFH,
         offset: u64,
         len: u32,
         reply: &mut ReadReply<'_, N>,
@@ -320,9 +319,9 @@ impl SftpServer<'_, DemoOpaqueFileHandle> for DemoSftpServer {
         Err(StatusCode::SSH_FX_PERMISSION_DENIED.into())
     }
 
-    fn write(
+    async fn write(
         &mut self,
-        opaque_file_handle: &DemoOpaqueFileHandle,
+        opaque_file_handle: &OFH,
         offset: u64,
         buf: &[u8],
     ) -> SftpOpResult<()> {
@@ -368,10 +367,10 @@ impl SftpServer<'_, DemoOpaqueFileHandle> for DemoSftpServer {
 
     async fn readdir<const N: usize>(
         &mut self,
-        opaque_dir_handle: &DemoOpaqueFileHandle,
+        opaque_dir_handle: &OFH,
         reply: &mut DirReply<'_, N>,
     ) -> SftpOpResult<()> {
-        debug!("read dir for  {:?}", opaque_dir_handle);
+        info!("read dir for {:?}", opaque_dir_handle);
 
         if let PrivatePathHandle::Directory(dir) = self
             .handles_manager
@@ -392,14 +391,14 @@ impl SftpServer<'_, DemoOpaqueFileHandle> for DemoSftpServer {
             debug!("path: {:?}", dir_path);
 
             if dir_path.is_dir() {
-                debug!("SftpServer ReadDir operation path = {:?}", dir_path);
+                info!("SftpServer ReadDir operation path = {:?}", dir_path);
 
                 let dir_iterator = fs::read_dir(dir_path).map_err(|err| {
                     error!("could not get the directory {:?}: {:?}", path_str, err);
                     StatusCode::SSH_FX_PERMISSION_DENIED
                 })?;
 
-                let name_entry_collection = DirEntriesCollection::new(dir_iterator);
+                let name_entry_collection = DirEntriesCollection::new(dir_iterator)?;
 
                 let response_read_status =
                     name_entry_collection.send_response(reply).await?;
@@ -416,7 +415,11 @@ impl SftpServer<'_, DemoOpaqueFileHandle> for DemoSftpServer {
         }
     }
 
-    fn stats(&mut self, follow_links: bool, file_path: &str) -> SftpOpResult<Attrs> {
+    async fn stats(
+        &mut self,
+        follow_links: bool,
+        file_path: &str,
+    ) -> SftpOpResult<Attrs> {
         log::debug!("SftpServer ListStats: file_path = {:?}", file_path);
         let file_path = Path::new(file_path);
 

@@ -1,6 +1,6 @@
 use crate::error::{SftpError, SftpResult};
 use crate::proto::{
-    ENCODED_SSH_FXP_DATA_MIN_LENGTH, ENCODED_BASE_NAME_SFTP_PACKET_LENGTH,
+    ENCODED_BASE_NAME_SFTP_PACKET_LENGTH, ENCODED_SSH_FXP_DATA_MIN_LENGTH,
     MAX_NAME_ENTRY_SIZE, NameEntry, PFlags, SftpNum,
 };
 use crate::server::SftpSink;
@@ -31,7 +31,6 @@ pub type SftpOpResult<T> = core::result::Result<T, StatusCode>;
 /// - [Scanning Directories](https://datatracker.ietf.org/doc/html/draft-ietf-secsh-filexfer-02#section-6.7)
 #[derive(PartialEq, Debug, Default)]
 pub enum ReadStatus {
-    // TODO Ideally this will contain an OwnedFileHandle
     /// There is more data to be read therefore the [`SftpServer`] will
     /// send more data in the next read request.
     #[default]
@@ -51,23 +50,37 @@ where
     T: OpaqueFileHandle,
 {
     /// Opens a file for reading/writing
-    fn open(&'_ mut self, path: &str, mode: &PFlags) -> SftpOpResult<T> {
-        log::error!(
-            "SftpServer Open operation not defined: path = {:?}, attrs = {:?}",
-            path,
-            mode
-        );
-        Err(StatusCode::SSH_FX_OP_UNSUPPORTED)
+    fn open(
+        &'_ mut self,
+        path: &str,
+        mode: &PFlags,
+    ) -> impl core::future::Future<Output = SftpOpResult<T>> {
+        async move {
+            log::error!(
+                "SftpServer Open operation not defined: path = {:?}, attrs = {:?}",
+                path,
+                mode
+            );
+            Err(StatusCode::SSH_FX_OP_UNSUPPORTED)
+        }
     }
 
     /// Close either a file or directory handle
-    fn close(&mut self, handle: &T) -> SftpOpResult<()> {
-        log::error!("SftpServer Close operation not defined: handle = {:?}", handle);
+    fn close(
+        &mut self,
+        handle: &T,
+    ) -> impl core::future::Future<Output = SftpOpResult<()>> {
+        async move {
+            log::error!(
+                "SftpServer Close operation not defined: handle = {:?}",
+                handle
+            );
 
-        Err(StatusCode::SSH_FX_OP_UNSUPPORTED)
+            Err(StatusCode::SSH_FX_OP_UNSUPPORTED)
+        }
     }
     /// Reads from a file that has previously being opened for reading
-    /// 
+    ///
     /// ## Notes to the implementer:
     ///
     /// The implementer is expected to use the parameter `reply` [`DirReply`] to:
@@ -77,26 +90,28 @@ where
     ///     1. Call `reply.send_header()` with the length of data to be sent
     ///     2. Call `reply.send_data()` once or multiple times to send all the data announced
     ///     3. Do not call `reply.send_eof()` during this [`readdir`] method call
-    /// 
+    ///
 
-    /// If the length communicated in the header does not match the total length of the data 
+    /// If the length communicated in the header does not match the total length of the data
     /// sent using `reply.send_data()`, the SFTP session will be broken.
-    /// 
+    ///
     #[allow(unused)]
-    async fn read<const N: usize>(
+    fn read<const N: usize>(
         &mut self,
         opaque_file_handle: &T,
         offset: u64,
         len: u32,
         reply: &mut ReadReply<'_, N>,
-    ) -> SftpResult<()> {
-        log::error!(
-            "SftpServer Read operation not defined: handle = {:?}, offset = {:?}, len = {:?}",
-            opaque_file_handle,
-            offset,
-            len
-        );
-        Err(SftpError::FileServerError(StatusCode::SSH_FX_OP_UNSUPPORTED))
+    ) -> impl core::future::Future<Output = SftpResult<()>> {
+        async move {
+            log::error!(
+                "SftpServer Read operation not defined: handle = {:?}, offset = {:?}, len = {:?}",
+                opaque_file_handle,
+                offset,
+                len
+            );
+            Err(SftpError::FileServerError(StatusCode::SSH_FX_OP_UNSUPPORTED))
+        }
     }
     /// Writes to a file that has previously being opened for writing
     fn write(
@@ -104,20 +119,27 @@ where
         opaque_file_handle: &T,
         offset: u64,
         buf: &[u8],
-    ) -> SftpOpResult<()> {
-        log::error!(
-            "SftpServer Write operation not defined: handle = {:?}, offset = {:?}, buf = {:?}",
-            opaque_file_handle,
-            offset,
-            buf
-        );
-        Ok(())
+    ) -> impl core::future::Future<Output = SftpOpResult<()>> {
+        async move {
+            log::error!(
+                "SftpServer Write operation not defined: handle = {:?}, offset = {:?}, buf = {:?}",
+                opaque_file_handle,
+                offset,
+                buf
+            );
+            Ok(())
+        }
     }
 
     /// Opens a directory and returns a handle
-    fn opendir(&mut self, dir: &str) -> SftpOpResult<T> {
-        log::error!("SftpServer OpenDir operation not defined: dir = {:?}", dir);
-        Err(StatusCode::SSH_FX_OP_UNSUPPORTED)
+    fn opendir(
+        &mut self,
+        dir: &str,
+    ) -> impl core::future::Future<Output = SftpOpResult<T>> {
+        async move {
+            log::error!("SftpServer OpenDir operation not defined: dir = {:?}", dir);
+            Err(StatusCode::SSH_FX_OP_UNSUPPORTED)
+        }
     }
 
     /// Reads the list of items in a directory and returns them using the [`DirReply`]
@@ -137,43 +159,58 @@ where
     /// If the length communicated in the header does not match the total length of all
     /// the items sent using `reply.send_item()`, the SFTP session will be
     /// broken.
-    /// 
+    ///
     /// The server is expected to keep track of the number of items that remain to be sent
     /// to the client since the client will only stop asking for more elements in the
     /// directory when a read dir request is answer with an reply.send_eof()
     ///
     #[allow(unused_variables)]
-    async fn readdir<const N: usize>(
+    fn readdir<const N: usize>(
         &mut self,
         opaque_dir_handle: &T,
         reply: &mut DirReply<'_, N>,
-    ) -> SftpOpResult<()> {
-        log::error!(
-            "SftpServer ReadDir operation not defined: handle = {:?}",
-            opaque_dir_handle
-        );
-        Err(StatusCode::SSH_FX_OP_UNSUPPORTED)
+    ) -> impl core::future::Future<Output = SftpOpResult<()>> {
+        async move {
+            log::error!(
+                "SftpServer ReadDir operation not defined: handle = {:?}",
+                opaque_dir_handle
+            );
+            Err(StatusCode::SSH_FX_OP_UNSUPPORTED)
+        }
     }
 
     /// Provides the real path of the directory specified
-    fn realpath(&mut self, dir: &str) -> SftpOpResult<NameEntry<'_>> {
-        log::error!("SftpServer RealPath operation not defined: dir = {:?}", dir);
-        Err(StatusCode::SSH_FX_OP_UNSUPPORTED)
+    fn realpath(
+        &mut self,
+        dir: &str,
+    ) -> impl core::future::Future<Output = SftpOpResult<NameEntry<'_>>> {
+        async move {
+            log::error!(
+                "SftpServer RealPath operation not defined: dir = {:?}",
+                dir
+            );
+            Err(StatusCode::SSH_FX_OP_UNSUPPORTED)
+        }
     }
 
     /// Provides the stats of the given file path
-    fn stats(&mut self, follow_links: bool, file_path: &str) -> SftpOpResult<Attrs> {
-        log::error!(
-            "SftpServer Stats operation not defined: follow_link = {:?}, \
-            file_path = {:?}",
-            follow_links,
-            file_path
-        );
-        Err(StatusCode::SSH_FX_OP_UNSUPPORTED)
+    fn stats(
+        &mut self,
+        follow_links: bool,
+        file_path: &str,
+    ) -> impl core::future::Future<Output = SftpOpResult<Attrs>> {
+        async move {
+            log::error!(
+                "SftpServer Stats operation not defined: follow_link = {:?}, \
+                file_path = {:?}",
+                follow_links,
+                file_path
+            );
+            Err(StatusCode::SSH_FX_OP_UNSUPPORTED)
+        }
     }
 }
 
-// TODO Define this
 /// A reference structure passed to the [`SftpServer::read()`] method to
 /// allow replying with the read data.
 /// Uses for [`ReadReply`] to:
@@ -208,7 +245,7 @@ impl<'g, const N: usize> ReadReply<'g, N> {
         req_id: ReqId,
         chan_out: &'g SftpOutputProducer<'g, N>,
     ) -> Self {
-        ReadReply { req_id, chan_out, data_len:0, data_sent_len:0 }
+        ReadReply { req_id, chan_out, data_len: 0, data_sent_len: 0 }
     }
 
     // TODO Make this enforceable
@@ -257,7 +294,7 @@ impl<'g, const N: usize> ReadReply<'g, N> {
     }
 
     /// Indicates whether all the data announced in the header has been sent
-    /// 
+    ///
     /// returns 0 when all data has been sent
     /// returns >0 when there is still data to be sent
     /// returns <0 when too much data has been sent
@@ -270,7 +307,6 @@ impl<'g, const N: usize> ReadReply<'g, N> {
         req_id: ReqId,
         data_len: u32,
     ) -> Result<&'g [u8], SftpError> {
-        
         // length field
         (data_len + ENCODED_SSH_FXP_DATA_MIN_LENGTH).enc(sink)?;
         // packet type (1)
@@ -309,7 +345,6 @@ mod read_reply_tests {
             u32::from_be_bytes(payload[..4].try_into().unwrap())
         );
     }
-
 }
 
 /// Uses for [`DirReply`] to:
@@ -346,7 +381,7 @@ impl<'g, const N: usize> DirReply<'g, N> {
         chan_out: &'g SftpOutputProducer<'g, N>,
     ) -> Self {
         // DirReply { chan_out: chan_out_wrapper, req_id }
-        DirReply { req_id, chan_out, data_len:0, data_sent_len:0 }
+        DirReply { req_id, chan_out, data_len: 0, data_sent_len: 0 }
     }
 
     // TODO Make this enforceable
@@ -404,7 +439,7 @@ impl<'g, const N: usize> DirReply<'g, N> {
     }
 
     /// Indicates whether all the data announced in the header has been sent
-    /// 
+    ///
     /// returns 0 when all data has been sent
     /// returns >0 when there is still data to be sent
     /// returns <0 when too much data has been sent
@@ -428,7 +463,6 @@ impl<'g, const N: usize> DirReply<'g, N> {
 
         Ok(sink.payload_slice())
     }
-
 }
 
 #[cfg(test)]
@@ -498,10 +532,6 @@ use std::{
 #[cfg(feature = "std")]
 /// This is a helper structure to make ReadDir into something manageable for
 /// [`DirReply`]
-///
-/// WIP: Not stable. It has know issues and most likely it's methods will change
-///
-/// TODO: It does not include longname and that may be an issue
 #[derive(Debug)]
 pub struct DirEntriesCollection {
     /// Number of elements
@@ -517,7 +547,7 @@ impl DirEntriesCollection {
     /// Creates this DirEntriesCollection so linux std users do not need to
     /// translate `std` directory elements into Sftp structures before sending a response
     /// back to the client
-    pub fn new(dir_iterator: ReadDir) -> Self {
+    pub fn new(dir_iterator: ReadDir) -> SftpOpResult<Self> {
         use log::info;
 
         let mut encoded_length = 0;
@@ -535,21 +565,22 @@ impl DirEntriesCollection {
                 let mut buffer = [0u8; MAX_NAME_ENTRY_SIZE];
                 let mut sftp_sink = SftpSink::new(&mut buffer);
                 name_entry.enc(&mut sftp_sink).ok()?;
-                //TODO remove this unchecked casting
-                encoded_length += sftp_sink.payload_len() as u32;
+                encoded_length += u32::try_from(sftp_sink.payload_len())
+                    .map_err(|_| StatusCode::SSH_FX_FAILURE)
+                    .ok()?;
                 Some(entry)
             })
             .collect();
 
-        //TODO remove this unchecked casting
-        let count = entries.len() as u32;
+        let count =
+            u32::try_from(entries.len()).map_err(|_| StatusCode::SSH_FX_FAILURE)?;
 
         info!(
             "Processed {} entries, estimated serialized length: {}",
             count, encoded_length
         );
 
-        Self { count, encoded_length, entries }
+        Ok(Self { count, encoded_length, entries })
     }
 
     /// Using the provided [`DirReply`] sends a response taking care of

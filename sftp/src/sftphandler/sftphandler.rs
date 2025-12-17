@@ -1,8 +1,8 @@
 use crate::error::SftpError;
 use crate::handles::OpaqueFileHandle;
 use crate::proto::{
-    self, InitVersionClient, InitVersionLowest, LStat, ReqId, SFTP_VERSION, SftpNum,
-    SftpPacket, Stat, StatusCode,
+    self, InitVersionClient, InitVersionLowest, LStat, MAX_REQUEST_LEN, ReqId,
+    SFTP_VERSION, SftpNum, SftpPacket, Stat, StatusCode,
 };
 use crate::server::{DirReply, ReadReply};
 use crate::sftperror::SftpResult;
@@ -100,15 +100,71 @@ where
     ///
     /// - `file_server` (implementing [`crate::sftpserver::SftpServer`] ): to execute
     /// the request in the local system
-    /// - `incomplete_request_buffer`: used to deal with fragmented
-    /// packets during [`SftpHandler::process`]
-    pub fn new(file_server: &'a mut S, request_buffer: &'a mut [u8]) -> Self {
+    /// - `request_buffer`: used to deal with fragmented
+    /// packets during [`SftpHandler::process_loop`]
+    pub fn new(
+        file_server: &'a mut S,
+        request_buffer: &'a mut [u8; MAX_REQUEST_LEN],
+    ) -> Self {
         SftpHandler {
             file_server,
-            // partial_write_request_tracker: None,
             state: HandlerState::default(),
             request_holder: RequestHolder::new(request_buffer),
             _marker: core::marker::PhantomData,
+        }
+    }
+
+    /// Take the [`ChanInOut`] and locks, Processing all the request from stdio until
+    /// an EOF is received
+    pub async fn process_loop(
+        &mut self,
+        stdio: ChanInOut<'a>,
+        buffer_in: &mut [u8],
+    ) -> SftpResult<()> {
+        let (mut chan_in, chan_out) = stdio.split();
+
+        let mut sftp_output_pipe = SftpOutputPipe::<BUFFER_OUT_SIZE>::new();
+
+        let (mut output_consumer, output_producer) =
+            sftp_output_pipe.split(chan_out)?;
+
+        let output_consumer_loop = output_consumer.receive_task();
+
+        let processing_loop = async {
+            loop {
+                trace!("SFTP: About to read bytes from SSH Channel");
+                let lr: usize = match chan_in.read(buffer_in).await {
+                    Ok(lr) => lr,
+                    Err(e) => match e {
+                        SunsetError::NoRoom {} => {
+                            error!("SSH channel is full");
+                            continue;
+                        }
+                        _ => return Err(e.into()),
+                    },
+                };
+
+                debug!("SFTP <---- received: {:?} bytes", lr);
+                trace!("SFTP <---- received: {:?}", &buffer_in[0..lr]);
+                if lr == 0 {
+                    debug!("client disconnected");
+                    return Err(SftpError::ClientDisconnected);
+                }
+
+                self.process(&buffer_in[0..lr], &output_producer).await?;
+            }
+            #[allow(unreachable_code)]
+            SftpResult::Ok(())
+        };
+        match select(processing_loop, output_consumer_loop).await {
+            embassy_futures::select::Either::First(r) => {
+                error!("Processing returned: {:?}", r);
+                r
+            }
+            embassy_futures::select::Either::Second(r) => {
+                error!("Output consumer returned: {:?}", r);
+                r
+            }
         }
     }
 
@@ -159,11 +215,11 @@ where
 
                             let data = &buf[..used];
                             buf = &buf[used..];
-                            match self.file_server.write(
-                                &T::try_from(&write.handle)?,
-                                *offset,
-                                data,
-                            ) {
+                            match self
+                                .file_server
+                                .write(&T::try_from(&write.handle)?, *offset, data)
+                                .await
+                            {
                                 Ok(_) => {
                                     if remaining_data == 0 {
                                         output_producer
@@ -258,8 +314,6 @@ where
                         Ok(request) => {
                             debug!("Got a valid request {:?}", request.sftp_num());
                             self.request_holder.try_hold(&source.buffer_used())?;
-
-                            buf = &buf[buf.len() - source.remaining()..];
 
                             // We got the request. Moving on to process it before deserializing more
                             // data
@@ -427,7 +481,11 @@ where
                                 self.state = HandlerState::Idle;
                             }
                             SftpPacket::LStat(req_id, LStat { file_path: path }) => {
-                                match self.file_server.stats(false, path.as_str()?) {
+                                match self
+                                    .file_server
+                                    .stats(false, path.as_str()?)
+                                    .await
+                                {
                                     Ok(attrs) => {
                                         debug!(
                                             "List stats for {} is {:?}",
@@ -457,7 +515,11 @@ where
                                 self.state = HandlerState::Idle;
                             }
                             SftpPacket::Stat(req_id, Stat { file_path: path }) => {
-                                match self.file_server.stats(true, path.as_str()?) {
+                                match self
+                                    .file_server
+                                    .stats(true, path.as_str()?)
+                                    .await
+                                {
                                     Ok(attrs) => {
                                         debug!(
                                             "List stats for {} is {:?}",
@@ -530,6 +592,7 @@ where
                                 match self
                                     .file_server
                                     .opendir(open_dir.dirname.as_str()?)
+                                    .await
                                 {
                                     Ok(opaque_file_handle) => {
                                         let response = SftpPacket::Handle(
@@ -560,6 +623,7 @@ where
                                 match self
                                     .file_server
                                     .close(&T::try_from(&close.handle)?)
+                                    .await
                                 {
                                     Ok(_) => {
                                         output_producer
@@ -594,6 +658,7 @@ where
                                 match self
                                     .file_server
                                     .open(open.filename.as_str()?, &open.pflags)
+                                    .await
                                 {
                                     Ok(opaque_file_handle) => {
                                         let response = SftpPacket::Handle(
@@ -624,6 +689,7 @@ where
                                 match self
                                     .file_server
                                     .realpath(path_info.path.as_str()?)
+                                    .await
                                 {
                                     Ok(name_entry) => {
                                         let mut dir_reply =
@@ -657,14 +723,18 @@ where
                                 }
                                 self.state = HandlerState::Idle;
                             }
-                            // SftpPacket::Status(req_id, status) => todo!(),
-                            // SftpPacket::Handle(req_id, handle) => todo!(),
-                            // SftpPacket::Data(req_id, data) => todo!(),
-                            // SftpPacket::Name(req_id, name) => todo!(),
-                            // SftpPacket::Attrs(req_id, attrs) => todo!(),
-                            _ => {
-
-                                // TODO: Use a catch all
+                            SftpPacket::Init(..)
+                            | SftpPacket::Version(..)
+                            | SftpPacket::Status(..)
+                            | SftpPacket::Handle(..)
+                            | SftpPacket::Data(..)
+                            | SftpPacket::Name(..)
+                            | SftpPacket::Attrs(..) => {
+                                error!(
+                                    "Unexpected SftpPacket in ProcessRequest state: {:?}",
+                                    request.sftp_num()
+                                );
+                                return Err(SunsetError::BadUsage {}.into());
                             }
                         }
                     } else {
@@ -683,50 +753,5 @@ where
         }
         debug!("Whole buffer processed. Getting more data");
         Ok(())
-    }
-
-    /// Take the [`ChanInOut`] and locks, Processing all the request from stdio until
-    /// an EOF is received
-    pub async fn process_loop(
-        &mut self,
-        stdio: ChanInOut<'a>,
-        buffer_in: &mut [u8],
-    ) -> SftpResult<()> {
-        let (mut chan_in, chan_out) = stdio.split();
-
-        let mut sftp_output_pipe = SftpOutputPipe::<BUFFER_OUT_SIZE>::new();
-
-        let (mut output_consumer, output_producer) =
-            sftp_output_pipe.split(chan_out)?;
-
-        let output_consumer_loop = output_consumer.receive_task();
-
-        let processing_loop = async {
-            loop {
-                trace!("SFTP: About to read bytes from SSH Channel");
-                let lr = chan_in.read(buffer_in).await?;
-
-                debug!("SFTP <---- received: {:?} bytes", lr);
-                trace!("SFTP <---- received: {:?}", &buffer_in[0..lr]);
-                if lr == 0 {
-                    debug!("client disconnected");
-                    return Err(SftpError::ClientDisconnected);
-                }
-
-                self.process(&buffer_in[0..lr], &output_producer).await?;
-            }
-            #[allow(unreachable_code)]
-            SftpResult::Ok(())
-        };
-        match select(processing_loop, output_consumer_loop).await {
-            embassy_futures::select::Either::First(r) => {
-                debug!("Processing returned: {:?}", r);
-                r
-            }
-            embassy_futures::select::Either::Second(r) => {
-                warn!("Output consumer returned: {:?}", r);
-                r
-            }
-        }
     }
 }
